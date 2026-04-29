@@ -3452,3 +3452,90 @@ fn test_set_acceptance_deadline_released_vault_fails() {
     let result = client.try_set_acceptance_deadline(&vault_id, &(env.ledger().timestamp() + 1000));
     assert!(result.is_err());
 }
+
+// ---- Task 4: vault activity logging tests ----
+
+#[test]
+fn test_activity_log_create_vault() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+
+    let log = client.get_vault_activity_log(&vault_id);
+    assert!(!log.is_empty());
+    assert_eq!(log.get(0).unwrap().action, String::from_str(&env, "create_vault"));
+}
+
+#[test]
+fn test_activity_log_deposit() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.deposit(&vault_id, &owner, &100_000i128);
+
+    let log = client.get_vault_activity_log(&vault_id);
+    let actions: Vec<String> = log.iter().map(|e| e.action).collect();
+    assert!(actions.iter().any(|a| *a == String::from_str(&env, "deposit")));
+}
+
+#[test]
+fn test_activity_log_withdraw() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.deposit(&vault_id, &owner, &100_000i128);
+    client.withdraw(&vault_id, &owner, &50_000i128);
+
+    let log = client.get_vault_activity_log(&vault_id);
+    let actions: Vec<String> = log.iter().map(|e| e.action).collect();
+    assert!(actions.iter().any(|a| *a == String::from_str(&env, "withdraw")));
+}
+
+#[test]
+fn test_activity_log_update_beneficiary() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let new_ben = Address::generate(&env);
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.update_beneficiary(&vault_id, &owner, &new_ben);
+
+    let log = client.get_vault_activity_log(&vault_id);
+    let actions: Vec<String> = log.iter().map(|e| e.action).collect();
+    assert!(actions.iter().any(|a| *a == String::from_str(&env, "update_beneficiary")));
+}
+
+#[test]
+fn test_activity_log_cancel_vault() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.cancel_vault(&vault_id, &owner);
+
+    let log = client.get_vault_activity_log(&vault_id);
+    let actions: Vec<String> = log.iter().map(|e| e.action).collect();
+    assert!(actions.iter().any(|a| *a == String::from_str(&env, "cancel_vault")));
+}
+
+#[test]
+fn test_activity_log_transfer_ownership() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let new_owner = Address::generate(&env);
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.transfer_ownership(&vault_id, &owner, &new_owner);
+
+    let log = client.get_vault_activity_log(&vault_id);
+    let actions: Vec<String> = log.iter().map(|e| e.action).collect();
+    assert!(actions.iter().any(|a| *a == String::from_str(&env, "transfer_ownership")));
+}
+
+#[test]
+fn test_activity_log_records_caller() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+
+    let log = client.get_vault_activity_log(&vault_id);
+    assert_eq!(log.get(0).unwrap().caller, owner);
+}
+
+#[test]
+fn test_activity_log_empty_for_new_vault_before_create() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    // vault 999 doesn't exist — log should be empty
+    let log = client.get_vault_activity_log(&999u64);
+    assert!(log.is_empty());
+}
