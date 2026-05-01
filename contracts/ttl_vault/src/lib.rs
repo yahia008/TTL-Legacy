@@ -700,7 +700,7 @@ impl TtlVaultContract {
         let max_deadline = now + max_ttl;
         if deadline > max_deadline {
             // Rollback on failure - Issue #391
-            vault.last_check_in = original_last_check_in;
+            let _ = original_last_check_in;
             return Err(ContractError::MaxTtlExceeded);
         }
         
@@ -2991,13 +2991,14 @@ impl TtlVaultContract {
 
     // --- helpers ---
 
+    #[allow(dead_code)]
     fn extend_vault_ttl(env: &Env, vault_id: u64, check_in_interval: u64) {
         let key = DataKey::Vault(vault_id);
         let ttl = vault_ttl_ledgers(check_in_interval);
         env.storage().persistent().extend_ttl(&key, VAULT_TTL_THRESHOLD, ttl);
     }
 
-    fn append_activity_log(env: &Env, vault_id: u64, action: &str, caller: &Address, details: &str) {
+    fn append_activity_log(env: &Env, vault_id: u64, action: &str, caller: &Address, _details: &str) {
         use types::AuditEntry;
         let key = DataKey::VaultAuditLog(vault_id);
         let mut log: Vec<AuditEntry> = env
@@ -3249,14 +3250,13 @@ impl TtlVaultContract {
         contact: Address,
     ) -> Result<(), ContractError> {
         caller.require_auth();
-        let mut vault = Self::load_vault(&env, vault_id);
+        let vault = Self::load_vault(&env, vault_id);
         if caller != vault.owner {
             return Err(ContractError::NotOwner);
         }
         if vault.status != ReleaseStatus::Locked {
             return Err(ContractError::AlreadyReleased);
         }
-        Self::save_vault(&env, vault_id, &vault);
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
         env.events().publish((SET_RECOVERY_TOPIC, vault_id), contact);
         Ok(())
@@ -3282,12 +3282,13 @@ impl TtlVaultContract {
         caller: Address,
     ) -> Result<(), ContractError> {
         caller.require_auth();
-        let mut vault = Self::load_vault(&env, vault_id);
+        let vault = Self::load_vault(&env, vault_id);
         if vault.status != ReleaseStatus::Locked {
             return Err(ContractError::AlreadyReleased);
         }
-        vault.last_check_in = env.ledger().timestamp();
-        Self::save_vault(&env, vault_id, &vault);
+        let mut v = vault.clone();
+        v.last_check_in = env.ledger().timestamp();
+        Self::save_vault(&env, vault_id, &v);
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
         env.events().publish((RECOVERY_EXTEND_TOPIC, vault_id), caller);
         Ok(())
@@ -3576,7 +3577,7 @@ impl TtlVaultContract {
         let timestamp = env.ledger().timestamp();
         
         for i in 0..10 {
-            let hash_input = vault_id.wrapping_mul(timestamp).wrapping_add(i as u64);
+            let _hash_input = vault_id.wrapping_mul(timestamp).wrapping_add(i as u64);
             let code_str = String::from_str(&env, "code");
             codes.push_back(BackupCode {
                 code: code_str.clone(),
@@ -4212,7 +4213,7 @@ impl TtlVaultContract {
             return Err(ContractError::AlreadyReleased);
         }
         // Vault must have multi-sig configured
-        let config = env
+        let _config = env
             .storage()
             .persistent()
             .get::<DataKey, MultiSigConfig>(&DataKey::MultiSigConfig(vault_id))

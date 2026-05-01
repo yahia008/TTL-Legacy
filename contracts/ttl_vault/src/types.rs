@@ -62,6 +62,7 @@ pub const MULTISIG_PROPOSAL_EXPIRY: u64 = 604_800; // 7 days
 pub const EXPIRY_WARNING_THRESHOLD: u64 = 86_400; // 24 hours
 
 /// Recovery extension duration in seconds (30 days)
+#[allow(dead_code)]
 pub const RECOVERY_EXTENSION_DURATION: u64 = 2_592_000;
 
 /// Maximum length for vault metadata string
