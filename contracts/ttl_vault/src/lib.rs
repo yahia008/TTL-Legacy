@@ -3840,36 +3840,57 @@ impl TtlVaultContract {
     // --- Issue #401: Beneficiary Delegation ---
 
     /// Delegates beneficiary role to another address.
-    /// Only the current beneficiary can call this.
+    /// Only the current beneficiary or the current delegate can call this.
     pub fn delegate_beneficiary_role(env: Env, vault_id: u64, delegate_address: Address) {
         Self::assert_not_paused(&env);
         let vault = Self::load_vault(&env, vault_id);
-        vault.beneficiary.require_auth();
+        
+        let mut chain: Vec<Address> = env.storage().persistent()
+            .get(&DataKey::BeneficiaryDelegationChain(vault_id))
+            .unwrap_or_else(|| {
+                let mut v = Vec::new(&env);
+                v.push_back(vault.beneficiary.clone());
+                v
+            });
+            
+        let current_delegate = chain.get(chain.len() - 1).unwrap();
+        current_delegate.require_auth();
 
-        if delegate_address == vault.beneficiary {
-            panic_with_error!(&env, ContractError::InvalidBeneficiary);
+        // Check if already in chain to prevent cycles
+        for addr in chain.iter() {
+            if addr == delegate_address {
+                panic_with_error!(&env, ContractError::InvalidBeneficiary);
+            }
         }
-
+        
+        chain.push_back(delegate_address.clone());
+        
         env.storage()
             .persistent()
-            .set(&DataKey::BeneficiaryDelegate(vault_id), &delegate_address);
+            .set(&DataKey::BeneficiaryDelegationChain(vault_id), &chain);
 
         env.events().publish(
             (DELEGATE_BENEFICIARY_TOPIC,),
-            (vault_id, vault.beneficiary.clone(), delegate_address),
+            (vault_id, current_delegate.clone(), delegate_address.clone()),
         );
         env.storage().persistent().extend_ttl(
-            &DataKey::BeneficiaryDelegate(vault_id),
+            &DataKey::BeneficiaryDelegationChain(vault_id),
             VAULT_TTL_THRESHOLD,
             vault_ttl_ledgers(vault.check_in_interval),
         );
     }
 
-    /// Gets the delegated beneficiary for a vault, if any.
-    pub fn get_delegated_beneficiary(env: Env, vault_id: u64) -> Option<Address> {
+    /// Gets the beneficiary delegation chain for a vault.
+    pub fn get_beneficiary_delegation_chain(env: Env, vault_id: u64) -> Vec<Address> {
         env.storage()
             .persistent()
-            .get::<DataKey, Address>(&DataKey::BeneficiaryDelegate(vault_id))
+            .get::<DataKey, Vec<Address>>(&DataKey::BeneficiaryDelegationChain(vault_id))
+            .unwrap_or_else(|| {
+                let vault = Self::load_vault(&env, vault_id);
+                let mut v = Vec::new(&env);
+                v.push_back(vault.beneficiary);
+                v
+            })
     }
 
     // --- Issue #402: Withdrawal Scheduling ---

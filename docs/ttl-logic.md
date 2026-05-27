@@ -79,14 +79,22 @@ trigger_release(vault_id)
   └─ transfer funds to beneficiary
 ```
 
-## Archival and Restoration
+## Beneficiary Delegation
 
-When a vault's TTL expires, Soroban may archive the vault data to reduce ledger bloat. Archived vaults cannot be accessed directly.
+Beneficiaries can delegate their role to another address, creating a chain of custody.
 
-To restore an archived vault:
+### Delegation
 
-1. Call `get_archived_vault_info(vault_id)` to check if archived metadata exists
-2. Call `restore_vault(vault_id)` to restore the vault state
-3. The vault becomes accessible again with extended TTL
+The beneficiary (or the current delegate) can call:
+```rust
+delegate_beneficiary_role(vault_id, delegate_address)
+```
 
-The `trigger_release` function automatically attempts restoration if the vault is archived.
+This updates the delegation chain and emits a `del_ben` event.
+
+### Querying Delegation
+
+To get the full delegation chain, call:
+```rust
+get_beneficiary_delegation_chain(vault_id) -> Vec<Address>
+```

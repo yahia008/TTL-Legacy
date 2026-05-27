@@ -2947,32 +2947,37 @@ fn test_beneficiary_assigned_event_emitted() {
 }
 
 
-// ---- Issue #401: Beneficiary Delegation Tests ----
-
 #[test]
-fn test_delegate_beneficiary_role() {
+fn test_delegate_beneficiary_chain() {
     let (env, owner, beneficiary, _, _, client) = setup();
     
     let vault_id = client.create_vault(&owner, &beneficiary, &100u64, &None);
-    let delegate = Address::generate(&env);
+    let delegate1 = Address::generate(&env);
+    let delegate2 = Address::generate(&env);
+    let attacker = Address::generate(&env);
     
-    // Beneficiary delegates to another address
-    client.delegate_beneficiary_role(&vault_id, &delegate);
+    // Beneficiary delegates to delegate1
+    client.delegate_beneficiary_role(&vault_id, &delegate1);
     
-    // Verify delegation
-    let delegated = client.get_delegated_beneficiary(&vault_id);
-    assert_eq!(delegated, Some(delegate.clone()));
-}
-
-#[test]
-fn test_delegate_beneficiary_requires_auth() {
-    let (env, owner, beneficiary, _, _, client) = setup();
+    // delegate1 delegates to delegate2
+    env.mock_auths(&[
+        (delegate1.clone(), client.address.clone(), symbol_short!("del_ben"), (vault_id, delegate1.clone(), delegate2.clone()).into_val(&env)),
+    ]);
     
-    let vault_id = client.create_vault(&owner, &beneficiary, &100u64, &None);
-    let delegate = Address::generate(&env);
+    client.delegate_beneficiary_role(&vault_id, &delegate2);
     
-    // Non-beneficiary cannot delegate
-    let result = client.try_delegate_beneficiary_role(&vault_id, &delegate);
+    // Verify delegation chain
+    let chain = client.get_beneficiary_delegation_chain(&vault_id);
+    assert_eq!(chain.len(), 3);
+    assert_eq!(chain.get(0).unwrap(), beneficiary.clone());
+    assert_eq!(chain.get(1).unwrap(), delegate1.clone());
+    assert_eq!(chain.get(2).unwrap(), delegate2.clone());
+    
+    // Attacker cannot delegate
+    env.mock_auths(&[
+        (attacker.clone(), client.address.clone(), symbol_short!("del_ben"), (vault_id, delegate2.clone(), attacker.clone()).into_val(&env)),
+    ]);
+    let result = client.try_delegate_beneficiary_role(&vault_id, &attacker);
     assert!(result.is_err());
 }
 
