@@ -58,6 +58,18 @@ pub const MULTISIG_REJECTED_TOPIC: Symbol = symbol_short!("ms_rej");
 pub const MULTISIG_EXECUTED_TOPIC: Symbol = symbol_short!("ms_exec");
 pub const MULTISIG_PROPOSAL_EXPIRY: u64 = 604_800; // 7 days
 
+// Issue #472: Vault State Transition Audit Trail
+pub const STATE_TRANSITION_TOPIC: Symbol = symbol_short!("st_trans");
+
+// Issue #473: Vault Ownership Proof
+pub const OWNERSHIP_PROOF_TOPIC: Symbol = symbol_short!("own_proof");
+
+// Issue #474: Vault Integrity Verification
+pub const INTEGRITY_TOPIC: Symbol = symbol_short!("integrity");
+
+// Issue #475: Vault Batch Status Query
+pub const BATCH_STATUS_TOPIC: Symbol = symbol_short!("batch_st");
+
 /// Warning threshold in seconds. If TTL remaining < this value, ping_expiry emits an event.
 pub const EXPIRY_WARNING_THRESHOLD: u64 = 86_400; // 24 hours
 
@@ -116,6 +128,7 @@ pub enum DataKey {
     MultiSigConfig(u64),
     MultiSigProposal(u64, u64),
     MultiSigProposalCount(u64),
+    StateTransitionLog(u64),
 }
 
 /// A vesting schedule attached to a vault.
@@ -374,4 +387,45 @@ pub enum ProposalStatus {
     Rejected,
     Executed,
     Expired,
+}
+
+/// State transition record for vault status changes - Issue #472
+#[contracttype]
+#[derive(Clone)]
+pub struct StateTransitionEntry {
+    pub from_status: ReleaseStatus,
+    pub to_status: ReleaseStatus,
+    pub actor: Address,
+    pub timestamp: u64,
+}
+
+/// Ownership proof result - Issue #473
+#[contracttype]
+#[derive(Clone)]
+pub struct OwnershipProof {
+    pub vault_id: u64,
+    pub owner_hash: BytesN<32>,
+    pub timestamp: u64,
+    pub is_active: bool,
+}
+
+/// Vault integrity report - Issue #474
+#[contracttype]
+#[derive(Clone)]
+pub struct IntegrityReport {
+    pub vault_id: u64,
+    pub checksum: BytesN<32>,
+    pub is_valid: bool,
+    pub timestamp: u64,
+}
+
+/// Vault status summary for batch queries - Issue #475
+#[contracttype]
+#[derive(Clone)]
+pub struct VaultStatusSummary {
+    pub vault_id: u64,
+    pub status: ReleaseStatus,
+    pub balance: i128,
+    pub last_check_in: u64,
+    pub is_expired: bool,
 }

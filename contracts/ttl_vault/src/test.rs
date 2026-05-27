@@ -3539,3 +3539,165 @@ fn test_activity_log_empty_for_new_vault_before_create() {
     let log = client.get_vault_activity_log(&999u64);
     assert!(log.is_empty());
 }
+
+// ── Issue #472: Vault State Transition Audit Trail ───────────────────────────
+
+#[test]
+fn test_state_transition_log_on_cancel() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.cancel_vault(&vault_id, &owner).unwrap();
+
+    let log = client.get_state_transition_log(&vault_id);
+    assert_eq!(log.len(), 1);
+    let entry = log.get(0).unwrap();
+    assert_eq!(entry.from_status, crate::types::ReleaseStatus::Locked);
+    assert_eq!(entry.to_status, crate::types::ReleaseStatus::Cancelled);
+    assert_eq!(entry.actor, owner);
+}
+
+#[test]
+fn test_state_transition_log_empty_for_locked_vault() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    let log = client.get_state_transition_log(&vault_id);
+    assert!(log.is_empty());
+}
+
+#[test]
+fn test_state_transition_log_on_release() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.deposit(&vault_id, &owner, &1000i128);
+
+    // Advance time past check-in interval to expire the vault
+    env.ledger().with_mut(|l| l.timestamp = l.timestamp + 7200);
+
+    client.trigger_release(&vault_id);
+
+    let log = client.get_state_transition_log(&vault_id);
+    assert_eq!(log.len(), 1);
+    let entry = log.get(0).unwrap();
+    assert_eq!(entry.from_status, crate::types::ReleaseStatus::Locked);
+    assert_eq!(entry.to_status, crate::types::ReleaseStatus::Released);
+}
+
+// ── Issue #473: Vault Ownership Proof ────────────────────────────────────────
+
+#[test]
+fn test_prove_vault_ownership_success() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+
+    let proof = client.prove_vault_ownership(&vault_id, &owner).unwrap();
+    assert_eq!(proof.vault_id, vault_id);
+    assert!(proof.is_active);
+    // owner_hash should be non-zero (32 bytes)
+    assert_eq!(proof.owner_hash.len(), 32);
+}
+
+#[test]
+fn test_prove_vault_ownership_non_owner_fails() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    let other = Address::generate(&env);
+
+    let err = client.try_prove_vault_ownership(&vault_id, &other).unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(ContractError::NotOwner as u32));
+}
+
+#[test]
+fn test_prove_vault_ownership_inactive_after_cancel() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.cancel_vault(&vault_id, &owner).unwrap();
+
+    let proof = client.prove_vault_ownership(&vault_id, &owner).unwrap();
+    assert!(!proof.is_active);
+}
+
+// ── Issue #474: Vault Integrity Verification ─────────────────────────────────
+
+#[test]
+fn test_verify_vault_integrity_success() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+
+    let report = client.verify_vault_integrity(&vault_id).unwrap();
+    assert_eq!(report.vault_id, vault_id);
+    assert!(report.is_valid);
+    assert_eq!(report.checksum.len(), 32);
+}
+
+#[test]
+fn test_verify_vault_integrity_checksum_changes_after_deposit() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+
+    let report1 = client.verify_vault_integrity(&vault_id).unwrap();
+    client.deposit(&vault_id, &owner, &500i128);
+    let report2 = client.verify_vault_integrity(&vault_id).unwrap();
+
+    // Checksum must differ after balance changes
+    assert_ne!(report1.checksum, report2.checksum);
+}
+
+#[test]
+fn test_verify_vault_integrity_nonexistent_vault_fails() {
+    let (_, _, _, _, _, client) = setup();
+    let err = client.try_verify_vault_integrity(&9999u64).unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(ContractError::VaultNotFound as u32));
+}
+
+// ── Issue #475: Vault Batch Status Query ─────────────────────────────────────
+
+#[test]
+fn test_batch_status_returns_all_found_vaults() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let id1 = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    let id2 = client.create_vault(&owner, &beneficiary, &7200u64, &None);
+
+    let results = client.get_vault_batch_status(&soroban_sdk::vec![&env, id1, id2]);
+    assert_eq!(results.len(), 2);
+}
+
+#[test]
+fn test_batch_status_skips_nonexistent_vaults() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let id1 = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+
+    let results = client.get_vault_batch_status(&soroban_sdk::vec![&env, id1, 9999u64]);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results.get(0).unwrap().vault_id, id1);
+}
+
+#[test]
+fn test_batch_status_reflects_correct_balance_and_status() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.deposit(&vault_id, &owner, &1000i128);
+
+    let results = client.get_vault_batch_status(&soroban_sdk::vec![&env, vault_id]);
+    let summary = results.get(0).unwrap();
+    assert_eq!(summary.balance, 1000i128);
+    assert_eq!(summary.status, crate::types::ReleaseStatus::Locked);
+    assert!(!summary.is_expired);
+}
+
+#[test]
+fn test_batch_status_marks_expired_vault() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+
+    env.ledger().with_mut(|l| l.timestamp = l.timestamp + 7200);
+
+    let results = client.get_vault_batch_status(&soroban_sdk::vec![&env, vault_id]);
+    assert!(results.get(0).unwrap().is_expired);
+}
+
+#[test]
+fn test_batch_status_empty_input() {
+    let (env, _, _, _, _, client) = setup();
+    let results = client.get_vault_batch_status(&soroban_sdk::vec![&env]);
+    assert!(results.is_empty());
+}
