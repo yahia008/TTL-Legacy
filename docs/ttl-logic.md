@@ -89,4 +89,46 @@ To restore an archived vault:
 2. Call `restore_vault(vault_id)` to restore the vault state
 3. The vault becomes accessible again with extended TTL
 
-The `trigger_release` function automatically attempts restoration if the vault is archived.
+
+## Beneficiary Delegation
+
+Beneficiaries can delegate their role to another address, creating a chain of custody.
+
+### Delegation
+
+The beneficiary (or the current delegate) can call:
+```rust
+delegate_beneficiary_role(vault_id, delegate_address)
+```
+
+This updates the delegation chain and emits a `del_ben` event.
+
+### Querying Delegation
+
+To get the full delegation chain, call:
+```rust
+get_beneficiary_delegation_chain(vault_id) -> Vec<Address>
+```
+
+## Beneficiary Updates
+
+Beneficiary updates are protected by a 24-hour timelock to prevent sudden changes.
+
+### Initiating Update
+
+The vault owner can initiate a beneficiary update:
+```rust
+update_beneficiary(vault_id, new_beneficiary)
+```
+
+This registers a pending update and emits a `ben_init` event with the `unlocks_at` timestamp.
+
+### Applying Update
+
+After the 24-hour timelock expires, the vault owner must apply the update:
+```rust
+apply_beneficiary_update(vault_id)
+```
+
+This completes the update and emits a `ben_upd` event.
+

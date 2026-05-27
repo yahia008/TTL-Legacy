@@ -2977,13 +2977,43 @@ fn test_delegate_beneficiary_requires_auth() {
 }
 
 #[test]
-fn test_delegate_to_self_fails() {
+fn test_update_beneficiary_timelock() {
     let (env, owner, beneficiary, _, _, client) = setup();
     
     let vault_id = client.create_vault(&owner, &beneficiary, &100u64, &None);
+    let new_beneficiary = Address::generate(&env);
     
-    // Cannot delegate to self
-    let result = client.try_delegate_beneficiary_role(&vault_id, &beneficiary);
+    // Initiate update
+    client.update_beneficiary(&vault_id, &owner, &new_beneficiary);
+    
+    // Apply update (should fail due to timelock)
+    let result = client.try_apply_beneficiary_update(&vault_id, &owner);
+    assert!(result.is_err());
+    
+    // Advance time by 25 hours
+    env.ledger().with_mut(|l| l.timestamp += 90_000);
+    
+    // Apply update (should succeed)
+    client.apply_beneficiary_update(&vault_id, &owner);
+    
+    // Verify update
+    let vault = client.get_vault(&vault_id);
+    assert_eq!(vault.beneficiary, new_beneficiary);
+}
+
+#[test]
+fn test_update_beneficiary_owner_only() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64, &None);
+    let new_beneficiary = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    
+    // Attacker cannot initiate update
+    env.mock_auths(&[
+        (attacker.clone(), client.address.clone(), symbol_short!("ben_upd_init"), (vault_id, new_beneficiary.clone()).into_val(&env)),
+    ]);
+    let result = client.try_update_beneficiary(&vault_id, &attacker, &new_beneficiary);
     assert!(result.is_err());
 }
 

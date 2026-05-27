@@ -9,7 +9,7 @@ mod types;
 use types::{
     BeneficiaryEntry, DataKey, ReleaseEvent, ReleaseStatus, ReleaseCondition, Vault, VestingSchedule,
     PasskeyHash, BackupCode, DisputeStatus, WithdrawalScheduleEntry, ConditionalAcceptanceEntry,
-    ArchivedVaultInfo, OwnershipTransferRequest, AuditEntry, MultiSigConfig, MultiSigProposal,
+    ArchivedVaultInfo, OwnershipTransferRequest, PendingBeneficiaryUpdate, AuditEntry, MultiSigConfig, MultiSigProposal,
     MultiSigOperation, ProposalStatus, PasskeyUsageEntry, BeneficiaryStatus, BridgeConfig,
     StateTransitionEntry, OwnershipProof, IntegrityReport, VaultStatusSummary,
     EXPIRY_WARNING_THRESHOLD, BENEFICIARY_UPDATED_TOPIC, CANCEL_TOPIC, CHECK_IN_TOPIC,
@@ -2347,12 +2347,11 @@ impl TtlVaultContract {
     /// # Returns
     /// `Ok(())` on success, `Err` on failure
     ///
-    /// # Errors
-    /// * `ContractError::NotOwner` - If caller is not the vault owner
-    /// * `ContractError::AlreadyReleased` - If vault is not in Locked status
+    /// Initiates a beneficiary update. Requires a timelock before completion.
+    /// Only the vault owner can call this.
     pub fn update_beneficiary(env: Env, vault_id: u64, caller: Address, new_beneficiary: Address) -> Result<(), ContractError> {
         caller.require_auth();
-        let mut vault = Self::load_vault(&env, vault_id);
+        let vault = Self::load_vault(&env, vault_id);
         if caller != vault.owner {
             return Err(ContractError::NotOwner);
         }
@@ -2364,7 +2363,55 @@ impl TtlVaultContract {
             return Err(ContractError::InvalidBeneficiary);
         }
 
+        let now = env.ledger().timestamp();
+        // Timelock: 24 hours
+        let timelock: u64 = 86_400;
+
+        let pending = PendingBeneficiaryUpdate {
+            new_beneficiary: new_beneficiary.clone(),
+            initiated_at: now,
+            unlocks_at: now + timelock,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingBeneficiaryUpdate(vault_id), &pending);
+        
+        env.storage().persistent().extend_ttl(
+            &DataKey::PendingBeneficiaryUpdate(vault_id),
+            VAULT_TTL_THRESHOLD,
+            vault_ttl_ledgers(vault.check_in_interval),
+        );
+
+        env.events().publish(
+            (symbol_short!("ben_init"), vault_id),
+            (new_beneficiary, now + timelock),
+        );
+
+        Ok(())
+    }
+
+    /// Completes a previously initiated beneficiary update after the timelock.
+    /// Only the vault owner can call this.
+    pub fn apply_beneficiary_update(env: Env, vault_id: u64, caller: Address) -> Result<(), ContractError> {
+        caller.require_auth();
+        let mut vault = Self::load_vault(&env, vault_id);
+        if caller != vault.owner {
+            return Err(ContractError::NotOwner);
+        }
+
+        let pending = env.storage()
+            .persistent()
+            .get::<DataKey, PendingBeneficiaryUpdate>(&DataKey::PendingBeneficiaryUpdate(vault_id))
+            .ok_or(ContractError::NoPendingAdmin)?; // Or a more appropriate error
+
+        let now = env.ledger().timestamp();
+        if now < pending.unlocks_at {
+            return Err(ContractError::OwnershipTransferTimeLocked);
+        }
+
         let old_beneficiary = vault.beneficiary.clone();
+        let new_beneficiary = pending.new_beneficiary.clone();
         vault.beneficiary = new_beneficiary.clone();
         Self::save_vault(&env, vault_id, &vault);
 
@@ -2372,12 +2419,14 @@ impl TtlVaultContract {
             Self::remove_beneficiary_vault_id(&env, &old_beneficiary, vault_id, vault.check_in_interval);
             Self::add_beneficiary_vault_id(&env, &new_beneficiary, vault_id, vault.check_in_interval);
         }
-        Self::log_audit_entry(&env, vault_id, "update_beneficiary", &caller, "");
-        Self::append_activity_log(&env, vault_id, "update_beneficiary", &caller, "");
-        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
+
+        env.storage().persistent().remove(&DataKey::PendingBeneficiaryUpdate(vault_id));
+        
+        Self::append_activity_log(&env, vault_id, "apply_beneficiary_update", &caller, "");
         env.events().publish((BENEFICIARY_UPDATED_TOPIC, vault_id), (old_beneficiary, new_beneficiary));
         Ok(())
     }
+
 
     /// Updates the check-in interval for a vault.
     ///

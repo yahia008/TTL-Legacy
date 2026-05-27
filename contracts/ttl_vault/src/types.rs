@@ -134,6 +134,7 @@ pub enum DataKey {
     BeneficiaryStatus(u64),
     PasskeyExpiry(u64, BytesN<32>),
     PendingOwnership(u64),
+    PendingBeneficiaryUpdate(u64),
     VaultAuditLog(u64),
     MultiSigConfig(u64),
     MultiSigProposal(u64, u64),
@@ -376,6 +377,15 @@ pub struct OwnershipTransferRequest {
     pub initiated_at: u64,
     pub unlocks_at: u64,
     pub expires_at: u64,
+}
+
+/// Pending beneficiary update request - Issue #490
+#[contracttype]
+#[derive(Clone)]
+pub struct PendingBeneficiaryUpdate {
+    pub new_beneficiary: Address,
+    pub initiated_at: u64,
+    pub unlocks_at: u64,
 }
 
 /// Audit entry for vault operations
