@@ -112,6 +112,9 @@ pub const SET_COUNTDOWN_TOPIC: Symbol = symbol_short!("set_cd");
 // Issue: Check-in Rate Limiting
 pub const CHECKIN_RATE_LIMITED_TOPIC: Symbol = symbol_short!("ci_rl");
 
+// Beneficiary capacity limit
+pub const BENEFICIARY_CAP_TOPIC: Symbol = symbol_short!("ben_cap");
+
 // Issue: Accelerated TTL Decay
 pub const TTL_ACCELERATE_TOPIC: Symbol = symbol_short!("ttl_acc");
 
