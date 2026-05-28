@@ -100,6 +100,10 @@ pub const TTL_REPAY_TOPIC: Symbol = symbol_short!("ttl_rep");
 pub const SNAPSHOT_CREATED_TOPIC: Symbol = symbol_short!("snap_crt");
 pub const SNAPSHOT_RESTORED_TOPIC: Symbol = symbol_short!("snap_rst");
 
+// Configurable countdown notifications
+pub const COUNTDOWN_NOTIF_TOPIC: Symbol = symbol_short!("cd_notif");
+pub const SET_COUNTDOWN_TOPIC: Symbol = symbol_short!("set_cd");
+
 // Issue: Check-in Rate Limiting
 pub const CHECKIN_RATE_LIMITED_TOPIC: Symbol = symbol_short!("ci_rl");
 
@@ -188,6 +192,9 @@ pub enum DataKey {
     // Vault state snapshots
     VaultSnapshot(u64, u32),
     VaultSnapshotCount(u64),
+    // Countdown notification config
+    CountdownConfig(u64),
+    CountdownFired(u64),
 }
 
 /// Check-in history entry for TTL prediction - Issue #482
@@ -559,4 +566,15 @@ pub struct VaultSnapshot {
     pub last_check_in: u64,
     pub metadata: String,
     pub is_paused: bool,
+}
+
+/// Configurable countdown notification thresholds for a vault.
+/// Each threshold (in seconds before expiry) triggers a `cd_notif` event
+/// when `check_countdown` is called and the TTL crosses that boundary.
+/// Default thresholds: 7 days (604800), 3 days (259200), 1 day (86400).
+#[contracttype]
+#[derive(Clone)]
+pub struct CountdownConfig {
+    /// Sorted descending list of thresholds in seconds (e.g. [604800, 259200, 86400]).
+    pub thresholds: Vec<u64>,
 }
