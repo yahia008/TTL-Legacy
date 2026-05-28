@@ -4082,3 +4082,154 @@ fn test_get_release_votes_empty_by_default() {
     let id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
     assert_eq!(client.get_release_votes(&id).len(), 0);
 }
+
+// ── Beneficiary Anonymity (ZK commitment) ────────────────────────────────────
+
+fn make_commitment(env: &Env, addr: &Address) -> (BytesN<32>, Bytes) {
+    // Encode the address as bytes via its ScVal representation
+    use soroban_sdk::IntoVal;
+    let val: soroban_sdk::Val = addr.clone().into_val(env);
+    let raw = env.to_xdr(val);
+    let hash: BytesN<32> = env.crypto().sha256(&raw).into();
+    (hash, raw)
+}
+
+#[test]
+fn test_commit_beneficiary_success() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+
+    let (commitment, _) = make_commitment(&env, &beneficiary);
+    client.commit_beneficiary(&id, &owner, &commitment).unwrap();
+
+    let stored = client.get_beneficiary_commitment(&id).unwrap();
+    assert_eq!(stored.commitment, commitment);
+}
+
+#[test]
+fn test_commit_beneficiary_not_owner_fails() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    let stranger = Address::generate(&env);
+
+    let (commitment, _) = make_commitment(&env, &beneficiary);
+    let err = client.try_commit_beneficiary(&id, &stranger, &commitment).unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(6)); // NotOwner
+}
+
+#[test]
+fn test_commit_beneficiary_duplicate_fails() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+
+    let (commitment, _) = make_commitment(&env, &beneficiary);
+    client.commit_beneficiary(&id, &owner, &commitment).unwrap();
+
+    let err = client.try_commit_beneficiary(&id, &owner, &commitment).unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(56)); // CommitmentAlreadySet
+}
+
+#[test]
+fn test_reveal_beneficiary_success() {
+    let (env, owner, beneficiary, _, token_address, client) = setup();
+    let id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.deposit(&id, &owner, &500_000i128);
+
+    let (commitment, proof) = make_commitment(&env, &beneficiary);
+    client.commit_beneficiary(&id, &owner, &commitment).unwrap();
+
+    // Advance time past check-in interval to expire the vault
+    env.ledger().with_mut(|l| l.timestamp += 3601);
+
+    client.reveal_beneficiary(&id, &proof, &beneficiary).unwrap();
+
+    // Vault should be Released and balance zero
+    let vault = client.get_vault(&id);
+    assert_eq!(vault.balance, 0);
+    assert_eq!(vault.status, crate::types::ReleaseStatus::Released);
+
+    // Beneficiary should have received funds
+    let token = token::Client::new(&env, &token_address);
+    assert_eq!(token.balance(&beneficiary), 500_000);
+
+    // Revealed address stored
+    assert_eq!(client.get_revealed_beneficiary(&id).unwrap(), beneficiary);
+}
+
+#[test]
+fn test_reveal_beneficiary_wrong_proof_fails() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.deposit(&id, &owner, &500_000i128);
+
+    let (commitment, _) = make_commitment(&env, &beneficiary);
+    client.commit_beneficiary(&id, &owner, &commitment).unwrap();
+
+    env.ledger().with_mut(|l| l.timestamp += 3601);
+
+    // Use wrong proof bytes
+    let wrong_proof = soroban_sdk::Bytes::from_array(&env, &[0u8; 32]);
+    let err = client.try_reveal_beneficiary(&id, &wrong_proof, &beneficiary).unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(57)); // InvalidZkProof
+}
+
+#[test]
+fn test_reveal_beneficiary_not_expired_fails() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.deposit(&id, &owner, &500_000i128);
+
+    let (commitment, proof) = make_commitment(&env, &beneficiary);
+    client.commit_beneficiary(&id, &owner, &commitment).unwrap();
+
+    // Do NOT advance time — vault still active
+    let err = client.try_reveal_beneficiary(&id, &proof, &beneficiary).unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(16)); // NotExpired
+}
+
+#[test]
+fn test_reveal_beneficiary_no_commitment_fails() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.deposit(&id, &owner, &500_000i128);
+
+    env.ledger().with_mut(|l| l.timestamp += 3601);
+
+    let (_, proof) = make_commitment(&env, &beneficiary);
+    let err = client.try_reveal_beneficiary(&id, &proof, &beneficiary).unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(55)); // CommitmentNotFound
+}
+
+#[test]
+fn test_reveal_beneficiary_double_reveal_fails() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.deposit(&id, &owner, &500_000i128);
+
+    let (commitment, proof) = make_commitment(&env, &beneficiary);
+    client.commit_beneficiary(&id, &owner, &commitment).unwrap();
+
+    env.ledger().with_mut(|l| l.timestamp += 3601);
+    client.reveal_beneficiary(&id, &proof, &beneficiary).unwrap();
+
+    let err = client.try_reveal_beneficiary(&id, &proof, &beneficiary).unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(58)); // BeneficiaryAlreadyRevealed
+}
+
+#[test]
+fn test_get_beneficiary_commitment_none_by_default() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+    let id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    assert!(client.get_beneficiary_commitment(&id).is_none());
+}
+
+#[test]
+fn test_get_revealed_beneficiary_none_before_reveal() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+
+    let (commitment, _) = make_commitment(&env, &beneficiary);
+    client.commit_beneficiary(&id, &owner, &commitment).unwrap();
+
+    assert!(client.get_revealed_beneficiary(&id).is_none());
+}

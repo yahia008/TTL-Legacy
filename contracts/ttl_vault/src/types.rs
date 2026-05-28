@@ -98,6 +98,10 @@ pub const TTL_REPAY_TOPIC: Symbol = symbol_short!("ttl_rep");
 // Issue: Check-in Rate Limiting
 pub const CHECKIN_RATE_LIMITED_TOPIC: Symbol = symbol_short!("ci_rl");
 
+// Beneficiary Anonymity (ZK)
+pub const BEN_COMMITTED_TOPIC: Symbol = symbol_short!("ben_com");
+pub const BEN_REVEALED_TOPIC: Symbol = symbol_short!("ben_rev");
+
 // Issue: Accelerated TTL Decay
 pub const TTL_ACCELERATE_TOPIC: Symbol = symbol_short!("ttl_acc");
 
@@ -180,6 +184,9 @@ pub enum DataKey {
     // Issue #499: beneficiary release votes
     ReleaseVotes(u64),
     ReleaseVoteThreshold(u64),
+    // Beneficiary Anonymity (ZK)
+    BeneficiaryCommitment(u64),
+    RevealedBeneficiary(u64),
 }
 
 /// Check-in history entry for TTL prediction - Issue #482
@@ -536,4 +543,14 @@ pub struct TtlPool {
 pub struct BiometricEntry {
     pub credential_hash: BytesN<32>,
     pub added_at: u64,
+}
+
+/// Stored when an owner commits to an anonymous beneficiary.
+/// The actual beneficiary address is hidden until `reveal_beneficiary` is called.
+#[contracttype]
+#[derive(Clone)]
+pub struct BeneficiaryCommitment {
+    /// SHA-256 hash of the beneficiary address bytes (the commitment).
+    pub commitment: BytesN<32>,
+    pub committed_at: u64,
 }
