@@ -962,6 +962,9 @@ impl TtlVaultContract {
             if caller != vault.owner {
                 return Err(ContractError::NotOwner);
             }
+            if vault.status == ReleaseStatus::EmergencyFrozen {
+                return Err(ContractError::VaultFrozen);
+            }
             if vault.status != ReleaseStatus::Locked {
                 return Err(ContractError::AlreadyReleased);
             }
@@ -2445,6 +2448,9 @@ impl TtlVaultContract {
         if caller != vault.owner {
             return Err(ContractError::NotOwner);
         }
+        if vault.status == ReleaseStatus::EmergencyFrozen {
+            return Err(ContractError::VaultFrozen);
+        }
         if vault.status != ReleaseStatus::Locked {
             return Err(ContractError::AlreadyReleased);
         }
@@ -2598,6 +2604,9 @@ impl TtlVaultContract {
         let mut vault = Self::load_vault(&env, vault_id);
         if caller != vault.owner {
             return Err(ContractError::NotOwner);
+        }
+        if vault.status == ReleaseStatus::EmergencyFrozen {
+            return Err(ContractError::VaultFrozen);
         }
         if vault.status != ReleaseStatus::Locked {
             return Err(ContractError::AlreadyReleased);
