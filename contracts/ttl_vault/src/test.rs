@@ -4838,3 +4838,162 @@ fn test_check_in_penalty_capped_at_balance() {
     assert_eq!(token.balance(&recipient), 100);
     assert_eq!(client.get_vault(&id).balance, 0);
 }
+
+// ── Vault State Snapshots ────────────────────────────────────────────────────
+
+#[test]
+fn test_create_snapshot_returns_id_and_stores_state() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.deposit(&vault_id, &owner, &50_000i128);
+
+    let snap_id = client.create_snapshot(&vault_id, &owner);
+    assert_eq!(snap_id, 1);
+
+    let snap = client.get_snapshot(&vault_id, &snap_id).unwrap();
+    assert_eq!(snap.vault_id, vault_id);
+    assert_eq!(snap.balance, 50_000i128);
+    assert_eq!(snap.beneficiary, beneficiary);
+    assert_eq!(snap.check_in_interval, 3600u64);
+}
+
+#[test]
+fn test_create_snapshot_increments_count() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+
+    assert_eq!(client.get_snapshot_count(&vault_id), 0);
+    client.create_snapshot(&vault_id, &owner);
+    assert_eq!(client.get_snapshot_count(&vault_id), 1);
+    client.create_snapshot(&vault_id, &owner);
+    assert_eq!(client.get_snapshot_count(&vault_id), 2);
+}
+
+#[test]
+fn test_create_snapshot_cycles_slots_after_ten() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+
+    for _ in 0..10 {
+        client.create_snapshot(&vault_id, &owner);
+    }
+    // 11th snapshot wraps back to slot 1
+    let snap_id = client.create_snapshot(&vault_id, &owner);
+    assert_eq!(snap_id, 1);
+    assert_eq!(client.get_snapshot_count(&vault_id), 11);
+}
+
+#[test]
+fn test_create_snapshot_rejects_non_owner() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    let stranger = Address::generate(&env);
+
+    let err = client.try_create_snapshot(&vault_id, &stranger).unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(6)); // NotOwner
+}
+
+#[test]
+fn test_create_snapshot_emits_event() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.create_snapshot(&vault_id, &owner);
+
+    let events = env.events().all();
+    let found = events.iter().any(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.try_into_val(&env).unwrap_or(soroban_sdk::vec![&env]);
+        topics.len() > 0 && {
+            let t: Result<soroban_sdk::Symbol, _> = topics.get(0).unwrap().try_into_val(&env);
+            t.map(|s| s == soroban_sdk::Symbol::new(&env, "snap_crt")).unwrap_or(false)
+        }
+    });
+    assert!(found, "SNAPSHOT_CREATED_TOPIC event not emitted");
+}
+
+#[test]
+fn test_restore_from_snapshot_reverts_state() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.deposit(&vault_id, &owner, &100_000i128);
+
+    // Take snapshot at balance=100_000
+    let snap_id = client.create_snapshot(&vault_id, &owner);
+
+    // Withdraw some funds to change state
+    client.withdraw(&vault_id, &owner, &40_000i128);
+    assert_eq!(client.get_vault(&vault_id).balance, 60_000i128);
+
+    // Restore
+    client.restore_from_snapshot(&vault_id, &owner, &snap_id);
+    assert_eq!(client.get_vault(&vault_id).balance, 100_000i128);
+}
+
+#[test]
+fn test_restore_from_snapshot_rejects_non_owner() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    let snap_id = client.create_snapshot(&vault_id, &owner);
+    let stranger = Address::generate(&env);
+
+    let err = client.try_restore_from_snapshot(&vault_id, &stranger, &snap_id).unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(6)); // NotOwner
+}
+
+#[test]
+fn test_restore_from_snapshot_rejects_released_vault() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.deposit(&vault_id, &owner, &100_000i128);
+    let snap_id = client.create_snapshot(&vault_id, &owner);
+
+    env.ledger().with_mut(|l| l.timestamp += 3601);
+    client.trigger_release(&vault_id);
+
+    let err = client.try_restore_from_snapshot(&vault_id, &owner, &snap_id).unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(7)); // AlreadyReleased
+}
+
+#[test]
+fn test_restore_from_snapshot_rejects_missing_snapshot() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+
+    let err = client.try_restore_from_snapshot(&vault_id, &owner, &99u32).unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(3)); // VaultNotFound
+}
+
+#[test]
+fn test_restore_from_snapshot_emits_event() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    let snap_id = client.create_snapshot(&vault_id, &owner);
+    client.restore_from_snapshot(&vault_id, &owner, &snap_id);
+
+    let events = env.events().all();
+    let found = events.iter().any(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.try_into_val(&env).unwrap_or(soroban_sdk::vec![&env]);
+        topics.len() > 0 && {
+            let t: Result<soroban_sdk::Symbol, _> = topics.get(0).unwrap().try_into_val(&env);
+            t.map(|s| s == soroban_sdk::Symbol::new(&env, "snap_rst")).unwrap_or(false)
+        }
+    });
+    assert!(found, "SNAPSHOT_RESTORED_TOPIC event not emitted");
+}
+
+#[test]
+fn test_get_snapshot_returns_none_for_missing() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    assert!(client.get_snapshot(&vault_id, &1u32).is_none());
+}
+
+#[test]
+fn test_snapshot_captures_metadata_and_interval() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.update_check_in_interval(&vault_id, &owner, &7200u64);
+
+    let snap_id = client.create_snapshot(&vault_id, &owner);
+    let snap = client.get_snapshot(&vault_id, &snap_id).unwrap();
+    assert_eq!(snap.check_in_interval, 7200u64);
+}

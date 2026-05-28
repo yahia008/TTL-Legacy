@@ -101,6 +101,10 @@ pub const BATCH_STATUS_TOPIC: Symbol = symbol_short!("bat_stat");
 pub const TTL_BORROW_TOPIC: Symbol = symbol_short!("ttl_bor");
 pub const TTL_REPAY_TOPIC: Symbol = symbol_short!("ttl_rep");
 
+// Vault state snapshots
+pub const SNAPSHOT_CREATED_TOPIC: Symbol = symbol_short!("snap_crt");
+pub const SNAPSHOT_RESTORED_TOPIC: Symbol = symbol_short!("snap_rst");
+
 // Issue: Check-in Rate Limiting
 pub const CHECKIN_RATE_LIMITED_TOPIC: Symbol = symbol_short!("ci_rl");
 

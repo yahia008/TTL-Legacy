@@ -42,7 +42,6 @@ use types::{
     HibernationEntry,
     HIBERNATION_ENTERED_TOPIC, HIBERNATION_EXITED_TOPIC,
 };
-
 #[cfg(test)]
 mod regression_tests;
 
