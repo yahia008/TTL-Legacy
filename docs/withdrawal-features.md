@@ -1,387 +1,355 @@
-# Withdrawal Features
+# Withdrawal Features Documentation
 
-This document describes the withdrawal-related features implemented in TTL-Legacy, including audit trails, batching, notifications, and dispute resolution.
+This document describes the four new withdrawal features implemented in Issues #565-#568.
 
-## Issue #569: Withdrawal Audit Trail
+## Issue #565: Withdrawal Scheduling Validation
 
 ### Overview
-The withdrawal audit trail tracks all withdrawal attempts (both successful and failed) with comprehensive details for security and compliance purposes.
+Prevents overlapping or conflicting withdrawal schedules by validating that scheduled withdrawals don't occur within a 1-hour window of each other.
 
-### Features
-- **Complete Tracking**: Records every withdrawal attempt with timestamp, amount, caller, and status
-- **Failure Logging**: Captures failed withdrawal attempts with error reasons
-- **Persistent Storage**: Audit entries are stored on-chain for permanent record
-- **Event Emission**: Emits events for both successful and failed withdrawals
+### Key Functions
 
-### Data Structure
+#### `schedule_withdrawal(vault_id, caller, timestamp, amount) -> Result<(), ContractError>`
+Schedules a withdrawal with conflict detection.
+
+**Parameters:**
+- `vault_id`: The vault ID
+- `caller`: The vault owner (must be authenticated)
+- `timestamp`: Unix timestamp for the scheduled withdrawal
+- `amount`: Amount to withdraw in stroops
+
+**Returns:**
+- `Ok(())` on success
+- `Err(ContractError::ConflictingWithdrawalSchedule)` if overlapping with existing schedule
+- `Err(ContractError::NotOwner)` if caller is not the vault owner
+- `Err(ContractError::AlreadyReleased)` if vault is not in Locked status
+
+**Events:**
+- `WITHDRAWAL_VALIDATION_TOPIC`: Emitted when a withdrawal is successfully scheduled
+
+### Implementation Details
+- Maintains a vector of `WithdrawalScheduleEntry` structs per vault
+- Checks for conflicts within a 1-hour (3600 second) window
+- Prevents scheduling withdrawals that would overlap with existing schedules
+- Stores schedules in persistent storage with TTL management
+
+### Error Codes
+- `OverlappingWithdrawalSchedule = 64`: Withdrawal overlaps with existing schedule
+- `ConflictingWithdrawalSchedule = 65`: Withdrawal conflicts with existing schedule
+
+---
+
+## Issue #566: Withdrawal Limits by Time
+
+### Overview
+Implements daily, weekly, and monthly withdrawal limits with automatic period resets. Limits are tracked per vault and reset automatically when their respective periods expire.
+
+### Key Functions
+
+#### `set_withdrawal_limits(vault_id, caller, daily_limit, weekly_limit, monthly_limit) -> Result<(), ContractError>`
+Configures withdrawal limits for a vault.
+
+**Parameters:**
+- `vault_id`: The vault ID
+- `caller`: The vault owner (must be authenticated)
+- `daily_limit`: Maximum amount withdrawable per day (in stroops)
+- `weekly_limit`: Maximum amount withdrawable per week (in stroops)
+- `monthly_limit`: Maximum amount withdrawable per month (in stroops)
+
+**Returns:**
+- `Ok(())` on success
+- `Err(ContractError::NotOwner)` if caller is not the vault owner
+
+**Events:**
+- `WITHDRAWAL_LIMIT_SET_TOPIC`: Emitted when limits are configured
+
+#### `get_withdrawal_limits(vault_id) -> Option<WithdrawalLimit>`
+Retrieves the current withdrawal limits for a vault.
+
+**Returns:**
+- `Some(WithdrawalLimit)` if limits are configured
+- `None` if no limits are set
+
+### Data Structures
+
+#### `WithdrawalLimit`
 ```rust
-pub struct WithdrawalAuditEntry {
-    pub vault_id: u64,
-    pub caller: Address,
+pub struct WithdrawalLimit {
+    pub daily_limit: i128,
+    pub weekly_limit: i128,
+    pub monthly_limit: i128,
+}
+```
+
+#### `WithdrawalTracker`
+```rust
+pub struct WithdrawalTracker {
+    pub daily_withdrawn: i128,
+    pub daily_reset_at: u64,
+    pub weekly_withdrawn: i128,
+    pub weekly_reset_at: u64,
+    pub monthly_withdrawn: i128,
+    pub monthly_reset_at: u64,
+}
+```
+
+### Implementation Details
+- Limits are checked during every `withdraw()` call
+- Trackers automatically reset when their period expires
+- Daily period: 24 hours (86,400 seconds)
+- Weekly period: 7 days (604,800 seconds)
+- Monthly period: 30 days (2,592,000 seconds)
+- Limits are optional; if not set, no restrictions apply
+
+### Error Codes
+- `DailyWithdrawalLimitExceeded = 66`: Daily limit would be exceeded
+- `WeeklyWithdrawalLimitExceeded = 67`: Weekly limit would be exceeded
+- `MonthlyWithdrawalLimitExceeded = 68`: Monthly limit would be exceeded
+
+### Events
+- `WITHDRAWAL_LIMIT_SET_TOPIC`: Emitted when limits are configured
+- `WITHDRAWAL_LIMIT_EXCEEDED_TOPIC`: Emitted when a limit is exceeded
+
+---
+
+## Issue #567: Withdrawal Destination Whitelist
+
+### Overview
+Restricts withdrawals to only whitelisted addresses. Vault owners can add and remove addresses from the whitelist.
+
+### Key Functions
+
+#### `add_whitelist_address(vault_id, caller, address, label) -> Result<(), ContractError>`
+Adds an address to the withdrawal whitelist.
+
+**Parameters:**
+- `vault_id`: The vault ID
+- `caller`: The vault owner (must be authenticated)
+- `address`: The address to whitelist
+- `label`: A descriptive label for the address (e.g., "cold_wallet")
+
+**Returns:**
+- `Ok(())` on success
+- `Err(ContractError::NotOwner)` if caller is not the vault owner
+
+**Events:**
+- `WHITELIST_ADDED_TOPIC`: Emitted when an address is added
+
+#### `remove_whitelist_address(vault_id, caller, address) -> Result<(), ContractError>`
+Removes an address from the withdrawal whitelist.
+
+**Parameters:**
+- `vault_id`: The vault ID
+- `caller`: The vault owner (must be authenticated)
+- `address`: The address to remove
+
+**Returns:**
+- `Ok(())` on success
+- `Err(ContractError::NotOwner)` if caller is not the vault owner
+
+**Events:**
+- `WHITELIST_REMOVED_TOPIC`: Emitted when an address is removed
+
+#### `get_whitelist(vault_id) -> Option<Vec<WhitelistEntry>>`
+Retrieves the whitelist for a vault.
+
+**Returns:**
+- `Some(Vec<WhitelistEntry>)` if whitelist exists
+- `None` if no whitelist is configured
+
+### Data Structures
+
+#### `WhitelistEntry`
+```rust
+pub struct WhitelistEntry {
+    pub address: Address,
+    pub added_at: u64,
+    pub label: String,
+}
+```
+
+### Implementation Details
+- If no whitelist is configured, all addresses are allowed (backward compatible)
+- If a whitelist exists, only whitelisted addresses can receive withdrawals
+- Whitelist entries include timestamps for audit trails
+- Whitelist is stored in persistent storage with TTL management
+
+### Error Codes
+- `WithdrawalDestinationNotWhitelisted = 69`: Destination address is not whitelisted
+
+### Events
+- `WHITELIST_ADDED_TOPIC`: Emitted when an address is added
+- `WHITELIST_REMOVED_TOPIC`: Emitted when an address is removed
+- `WHITELIST_VIOLATION_TOPIC`: Emitted when a withdrawal to non-whitelisted address is attempted
+
+---
+
+## Issue #568: Withdrawal Reversal
+
+### Overview
+Allows vault owners to reverse withdrawals within a grace period (24 hours by default). Reversed withdrawals restore funds to the vault.
+
+### Key Functions
+
+#### `reverse_withdrawal(vault_id, caller, withdrawal_id) -> Result<(), ContractError>`
+Reverses a withdrawal within the grace period.
+
+**Parameters:**
+- `vault_id`: The vault ID
+- `caller`: The vault owner (must be authenticated)
+- `withdrawal_id`: The ID of the withdrawal to reverse
+
+**Returns:**
+- `Ok(())` on success
+- `Err(ContractError::WithdrawalReversalGracePeriodExpired)` if grace period has expired
+- `Err(ContractError::WithdrawalAlreadyReversed)` if already reversed
+- `Err(ContractError::NotOwner)` if caller is not the vault owner
+
+**Events:**
+- `WITHDRAWAL_REVERSED_TOPIC`: Emitted when a withdrawal is successfully reversed
+
+#### `get_withdrawal_reversal(vault_id, withdrawal_id) -> Option<WithdrawalReversal>`
+Retrieves a withdrawal reversal record.
+
+**Returns:**
+- `Some(WithdrawalReversal)` if the record exists
+- `None` if not found
+
+### Data Structures
+
+#### `WithdrawalReversal`
+```rust
+pub struct WithdrawalReversal {
+    pub withdrawal_id: u64,
     pub amount: i128,
-    pub timestamp: u64,
-    pub success: bool,
-    pub error_reason: String,
+    pub withdrawn_at: u64,
+    pub grace_period_until: u64,
+    pub reversed: bool,
 }
 ```
 
-### API
+### Implementation Details
+- Every withdrawal is automatically recorded for potential reversal
+- Grace period is 24 hours (86,400 seconds) from withdrawal time
+- Withdrawal IDs are auto-incremented per vault
+- Reversals restore funds to the vault balance
+- Once reversed, a withdrawal cannot be reversed again
+- Reversal records are stored in persistent storage with TTL management
 
-#### Get Withdrawal Audit Log
-```rust
-pub fn get_withdrawal_audit_log(env: Env, vault_id: u64) -> Vec<WithdrawalAuditEntry>
-```
-
-Retrieves the complete withdrawal audit trail for a vault.
-
-**Parameters:**
-- `env`: Soroban environment
-- `vault_id`: The vault ID to query
-
-**Returns:** Vector of withdrawal audit entries
-
-**Example:**
-```rust
-let audit_log = client.get_withdrawal_audit_log(&vault_id);
-for entry in audit_log.iter() {
-    println!("Withdrawal: {} stroops by {} at {}", 
-        entry.amount, entry.caller, entry.timestamp);
-}
-```
+### Error Codes
+- `WithdrawalReversalGracePeriodExpired = 70`: Grace period has expired
+- `WithdrawalAlreadyReversed = 71`: Withdrawal has already been reversed
 
 ### Events
+- `WITHDRAWAL_REVERSED_TOPIC`: Emitted when a withdrawal is reversed
+- `REVERSAL_GRACE_EXPIRED_TOPIC`: Emitted when a grace period expires
 
-#### WITHDRAWAL_AUDIT_TOPIC
-Emitted for every withdrawal attempt (successful or failed).
+---
 
-**Event Data:**
-- `vault_id`: The vault ID
-- `caller`: The address attempting withdrawal
-- `amount`: The withdrawal amount in stroops
-- `success`: Whether the withdrawal succeeded
-- `timestamp`: The ledger timestamp
+## Integration with Existing Withdrawal Function
 
-#### WITHDRAWAL_FAILED_TOPIC
-Emitted only for failed withdrawal attempts.
-
-**Event Data:**
-- `vault_id`: The vault ID
-- `caller`: The address attempting withdrawal
-- `amount`: The withdrawal amount in stroops
-- `error_reason`: The reason for failure
-
-## Issue #570: Withdrawal Batching
-
-### Overview
-Withdrawal batching allows multiple withdrawals from different vaults to be processed in a single transaction, reducing gas costs and improving efficiency.
-
-### Features
-- **Multi-Vault Withdrawals**: Withdraw from multiple vaults in one transaction
-- **Atomic Validation**: All withdrawals are validated before any state changes
-- **Audit Trail Integration**: Each withdrawal in the batch is recorded in the audit trail
-- **Notification Support**: Each withdrawal generates a notification event
-
-### API
-
-#### Batch Withdraw
-```rust
-pub fn batch_withdraw(
-    env: Env,
-    vault_ids: Vec<u64>,
-    amounts: Vec<i128>,
-    caller: Address,
-) -> Result<(), ContractError>
-```
-
-Withdraws from multiple vaults owned by the same caller in a single transaction.
-
-**Parameters:**
-- `env`: Soroban environment
-- `vault_ids`: Vector of vault IDs to withdraw from
-- `amounts`: Vector of amounts (in stroops) to withdraw from each vault
-- `caller`: The address of the caller (must be the owner of all vaults)
-
-**Returns:** `Ok(())` on success, `Err` on failure
-
-**Errors:**
-- `ContractError::Paused`: If the contract is paused
-- `ContractError::InvalidAmount`: If vault_ids.len() != amounts.len() or any amount is not positive
-- `ContractError::VaultNotFound`: If any vault does not exist
-- `ContractError::NotOwner`: If caller is not the owner of any vault
-- `ContractError::AlreadyReleased`: If any vault is not in Locked status
-- `ContractError::InsufficientBalance`: If any vault balance is less than the requested amount
-
-**Example:**
-```rust
-let vault_ids = vec![&env, vault_id1, vault_id2, vault_id3];
-let amounts = vec![&env, 10_000i128, 20_000i128, 15_000i128];
-client.batch_withdraw(&vault_ids, &amounts, &owner)?;
-```
-
-### Benefits
-- **Gas Efficiency**: Single transaction overhead instead of multiple
-- **Atomic Execution**: All-or-nothing semantics
-- **Audit Trail**: Each withdrawal is individually tracked
-- **Notifications**: Real-time alerts for each withdrawal
-
-## Issue #571: Withdrawal Notifications
-
-### Overview
-Withdrawal notifications provide real-time alerts to vault owners whenever a withdrawal is attempted or completed.
-
-### Features
-- **Real-Time Alerts**: Immediate notification on withdrawal attempts
-- **Comprehensive Data**: Includes caller, amount, and timestamp
-- **Event-Based**: Leverages Soroban's event system for off-chain listeners
-- **Batch Support**: Notifications for each withdrawal in a batch
-
-### Events
-
-#### WITHDRAWAL_NOTIF_TOPIC
-Emitted for every successful withdrawal (both single and batch).
-
-**Event Data:**
-- `vault_id`: The vault ID
-- `caller`: The address performing the withdrawal
-- `amount`: The withdrawal amount in stroops
-- `timestamp`: The ledger timestamp
-
-### Off-Chain Integration
-
-Backend services can listen to withdrawal notification events:
-
-```javascript
-// Example: Listen for withdrawal notifications
-sorobanClient.events()
-    .forContract(contractAddress)
-    .onEvent('wd_notif', (event) => {
-        const { vault_id, caller, amount, timestamp } = event;
-        // Send email/SMS notification to vault owner
-        notificationService.sendAlert({
-            vaultId: vault_id,
-            message: `Withdrawal of ${amount} stroops by ${caller}`,
-            timestamp: timestamp
-        });
-    });
-```
-
-## Issue #572: Withdrawal Dispute
-
-### Overview
-The withdrawal dispute mechanism allows vault owners to challenge unauthorized withdrawals within a 24-hour grace period.
-
-### Features
-- **Grace Period**: 24-hour window to dispute withdrawals
-- **Dispute Tracking**: Maintains complete dispute history
-- **Resolution Mechanism**: Owner can approve or reject disputes
-- **Event Logging**: All disputes and resolutions are logged
-
-### Data Structure
-```rust
-pub struct WithdrawalDispute {
-    pub vault_id: u64,
-    pub withdrawal_timestamp: u64,
-    pub dispute_filed_at: u64,
-    pub dispute_expires_at: u64,
-    pub status: DisputeStatus,
-    pub reason: String,
-    pub resolved_at: Option<u64>,
-}
-
-pub enum DisputeStatus {
-    None,
-    Filed,
-    Resolved,
-}
-```
-
-### API
-
-#### File Withdrawal Dispute
-```rust
-pub fn file_withdrawal_dispute(
-    env: Env,
-    vault_id: u64,
-    caller: Address,
-    reason: String,
-) -> Result<(), ContractError>
-```
-
-Files a dispute for a withdrawal within the grace period (24 hours).
-
-**Parameters:**
-- `env`: Soroban environment
-- `vault_id`: The vault ID
-- `caller`: The vault owner (requires auth)
-- `reason`: The reason for the dispute
-
-**Returns:** `Ok(())` on success, `Err` on failure
-
-**Errors:**
-- `ContractError::NotOwner`: If caller is not the vault owner
-
-**Example:**
-```rust
-let reason = String::from_str(&env, "Unauthorized withdrawal detected");
-client.file_withdrawal_dispute(&vault_id, &owner, &reason)?;
-```
-
-#### Resolve Withdrawal Dispute
-```rust
-pub fn resolve_withdrawal_dispute(
-    env: Env,
-    vault_id: u64,
-    caller: Address,
-    dispute_index: u32,
-    approved: bool,
-) -> Result<(), ContractError>
-```
-
-Resolves a withdrawal dispute.
-
-**Parameters:**
-- `env`: Soroban environment
-- `vault_id`: The vault ID
-- `caller`: The vault owner (requires auth)
-- `dispute_index`: The index of the dispute to resolve
-- `approved`: Whether to approve the dispute
-
-**Returns:** `Ok(())` on success, `Err` on failure
-
-**Errors:**
-- `ContractError::NotOwner`: If caller is not the vault owner
-- `ContractError::DisputeFiled`: If dispute index is invalid
-
-**Example:**
-```rust
-// Approve the dispute (mark as resolved)
-client.resolve_withdrawal_dispute(&vault_id, &owner, &0u32, &true)?;
-```
-
-#### Get Withdrawal Disputes
-```rust
-pub fn get_withdrawal_disputes(env: Env, vault_id: u64) -> Vec<WithdrawalDispute>
-```
-
-Retrieves all withdrawal disputes for a vault.
-
-**Parameters:**
-- `env`: Soroban environment
-- `vault_id`: The vault ID to query
-
-**Returns:** Vector of withdrawal disputes
-
-**Example:**
-```rust
-let disputes = client.get_withdrawal_disputes(&vault_id);
-for dispute in disputes.iter() {
-    println!("Dispute: {} (Status: {:?})", 
-        dispute.reason, dispute.status);
-}
-```
-
-### Events
-
-#### WITHDRAWAL_DISPUTE_FILED_TOPIC
-Emitted when a withdrawal dispute is filed.
-
-**Event Data:**
-- `vault_id`: The vault ID
-- `caller`: The vault owner
-- `timestamp`: When the dispute was filed
-- `reason`: The dispute reason
-
-#### WITHDRAWAL_DISPUTE_RESOLVED_TOPIC
-Emitted when a withdrawal dispute is resolved.
-
-**Event Data:**
-- `vault_id`: The vault ID
-- `caller`: The vault owner
-- `dispute_index`: The index of the resolved dispute
-- `approved`: Whether the dispute was approved
-
-### Grace Period
-- **Duration**: 24 hours (86,400 seconds)
-- **Start**: When the withdrawal is executed
-- **End**: 24 hours after the withdrawal
-- **Action**: Disputes must be filed within this window
-
-## Integration Guide
-
-### Backend Integration
+All four features are integrated into the existing `withdraw()` function:
 
 ```rust
-// Record withdrawal with audit trail
-let audit_log = client.get_withdrawal_audit_log(&vault_id);
-
-// Check for disputes
-let disputes = client.get_withdrawal_disputes(&vault_id);
-for dispute in disputes.iter() {
-    if dispute.status == DisputeStatus::Filed {
-        // Handle pending dispute
-        alert_compliance_team(&dispute);
-    }
-}
+pub fn withdraw(env: Env, vault_id: u64, caller: Address, amount: i128) -> Result<(), ContractError>
 ```
 
-### Frontend Integration
+The withdrawal process now:
+1. Validates the caller is the vault owner
+2. Checks withdrawal approval threshold (Issue #404)
+3. **Checks withdrawal limits** (Issue #566)
+4. **Validates whitelist** (Issue #567)
+5. Transfers funds to the owner
+6. **Records withdrawal for reversal** (Issue #568)
+7. Emits withdrawal event
 
-```javascript
-// Listen for withdrawal notifications
-const withdrawalNotifications = [];
-sorobanClient.events()
-    .forContract(contractAddress)
-    .onEvent('wd_notif', (event) => {
-        withdrawalNotifications.push({
-            vaultId: event.vault_id,
-            amount: event.amount,
-            timestamp: event.timestamp
-        });
-        updateUI(withdrawalNotifications);
-    });
+---
 
-// Display audit trail
-async function displayAuditTrail(vaultId) {
-    const auditLog = await client.getWithdrawalAuditLog(vaultId);
-    return auditLog.map(entry => ({
-        amount: entry.amount,
-        caller: entry.caller,
-        timestamp: entry.timestamp,
-        status: entry.success ? 'Success' : 'Failed',
-        reason: entry.error_reason
-    }));
-}
+## Usage Examples
+
+### Example 1: Setting Up Withdrawal Limits
+
+```rust
+// Set daily limit of 10 XLM, weekly of 50 XLM, monthly of 100 XLM
+client.set_withdrawal_limits(
+    &vault_id,
+    &owner,
+    &(10 * 10_000_000i128),      // 10 XLM in stroops
+    &(50 * 10_000_000i128),      // 50 XLM in stroops
+    &(100 * 10_000_000i128),     // 100 XLM in stroops
+)?;
 ```
+
+### Example 2: Whitelisting Addresses
+
+```rust
+// Add a cold wallet to the whitelist
+client.add_whitelist_address(
+    &vault_id,
+    &owner,
+    &cold_wallet_address,
+    &String::from_str(&env, "cold_storage"),
+)?;
+
+// Withdrawals can now only go to whitelisted addresses
+client.withdraw(&vault_id, &owner, &amount)?;
+```
+
+### Example 3: Reversing a Withdrawal
+
+```rust
+// Withdraw funds
+client.withdraw(&vault_id, &owner, &amount)?;
+
+// Within 24 hours, reverse the withdrawal
+client.reverse_withdrawal(&vault_id, &owner, &0u64)?;
+
+// Funds are restored to the vault
+```
+
+### Example 4: Scheduling Withdrawals
+
+```rust
+// Schedule a withdrawal for tomorrow
+let tomorrow = env.ledger().timestamp() + 86_400u64;
+client.schedule_withdrawal(
+    &vault_id,
+    &owner,
+    &tomorrow,
+    &amount,
+)?;
+```
+
+---
 
 ## Security Considerations
 
-1. **Audit Trail Immutability**: Audit entries cannot be modified or deleted
-2. **Event Logging**: All events are permanently recorded on-chain
-3. **Grace Period**: 24-hour dispute window provides time for investigation
-4. **Owner-Only Disputes**: Only vault owners can file disputes
-5. **Batch Atomicity**: Batch withdrawals are all-or-nothing
+1. **Withdrawal Limits**: Limits are per-vault and reset automatically. Owners should set appropriate limits based on their risk tolerance.
 
-## Best Practices
+2. **Whitelist**: If a whitelist is configured, only whitelisted addresses can receive withdrawals. This prevents accidental transfers to wrong addresses.
 
-1. **Regular Audits**: Periodically review withdrawal audit trails
-2. **Dispute Monitoring**: Monitor pending disputes for security issues
-3. **Batch Optimization**: Use batch withdrawals for multiple vaults to save gas
-4. **Notification Handling**: Set up backend listeners for withdrawal notifications
-5. **Grace Period Awareness**: File disputes within the 24-hour window
+3. **Reversal Grace Period**: The 24-hour grace period allows owners to recover from mistakes. After the grace period, reversals are no longer possible.
 
-## Testing
+4. **Scheduling**: Scheduled withdrawals prevent overlapping transactions within a 1-hour window, reducing the risk of double-spending.
 
-Comprehensive tests are included in `contracts/ttl_vault/src/test.rs`:
+5. **Authorization**: All configuration functions require owner authentication via `require_auth()`.
 
-- `test_withdrawal_audit_trail_records_successful_withdrawal`
-- `test_withdrawal_audit_trail_records_failed_withdrawal`
-- `test_withdrawal_audit_trail_multiple_attempts`
-- `test_batch_withdraw_with_audit_trail`
-- `test_batch_withdraw_efficiency`
-- `test_withdrawal_notification_event_emitted`
-- `test_batch_withdrawal_notifications`
-- `test_file_withdrawal_dispute`
-- `test_resolve_withdrawal_dispute`
-- `test_dispute_grace_period`
-- `test_multiple_disputes`
-- `test_dispute_only_by_owner`
+---
+
+## Storage Efficiency
+
+- Withdrawal schedules are stored per-vault in a vector
+- Withdrawal limits and trackers are stored per-vault
+- Whitelist entries are stored per-vault in a vector
+- Reversal records are stored with (vault_id, withdrawal_id) as key
+- All storage uses TTL management to prevent bloat
+
+---
+
+## Future Enhancements
+
+1. **Configurable Grace Period**: Allow owners to set custom reversal grace periods
+2. **Withdrawal Notifications**: Emit events for monitoring systems
+3. **Batch Reversals**: Reverse multiple withdrawals in a single transaction
+4. **Limit Adjustments**: Allow dynamic limit adjustments without resetting trackers
+5. **Whitelist Expiry**: Add expiration dates to whitelist entries

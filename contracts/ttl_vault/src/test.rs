@@ -5429,232 +5429,241 @@ fn test_get_countdown_config_returns_defaults_when_not_set() {
 }
 
 
-// --- Issue #569: Withdrawal Audit Trail Tests ---
+// --- Issue #565: Withdrawal Scheduling Validation Tests ---
 
 #[test]
-fn test_withdrawal_audit_trail_records_successful_withdrawal() {
-    let (env, owner, beneficiary, _, token_address, client) = setup();
-    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
-    client.deposit(&owner, &vault_id, &100_000);
+fn test_schedule_withdrawal_success() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+    client.deposit(&vault_id, &owner, &100_000i128);
 
-    client.withdraw(&vault_id, &owner, &50_000);
-
-    let audit_log = client.get_withdrawal_audit_log(&vault_id);
-    assert_eq!(audit_log.len(), 1);
-    let entry = audit_log.get(0).unwrap();
-    assert_eq!(entry.vault_id, vault_id);
-    assert_eq!(entry.caller, owner);
-    assert_eq!(entry.amount, 50_000);
-    assert_eq!(entry.success, true);
+    let timestamp = env.ledger().timestamp() + 3600u64;
+    let result = client.try_schedule_withdrawal(&vault_id, &owner, &timestamp, &50_000i128);
+    assert!(result.is_ok(), "Schedule withdrawal should succeed");
 }
 
 #[test]
-fn test_withdrawal_audit_trail_records_failed_withdrawal() {
-    let (env, owner, beneficiary, _, token_address, client) = setup();
-    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
-    client.deposit(&owner, &vault_id, &100_000);
+fn test_schedule_withdrawal_rejects_overlapping() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+    client.deposit(&vault_id, &owner, &100_000i128);
 
-    let result = client.try_withdraw(&vault_id, &owner, &200_000);
-    assert!(result.is_err());
+    let timestamp = env.ledger().timestamp() + 3600u64;
+    client.schedule_withdrawal(&vault_id, &owner, &timestamp, &50_000i128);
 
-    let audit_log = client.get_withdrawal_audit_log(&vault_id);
-    assert_eq!(audit_log.len(), 1);
-    let entry = audit_log.get(0).unwrap();
-    assert_eq!(entry.success, false);
-    assert_eq!(entry.amount, 200_000);
+    // Try to schedule within 1 hour window
+    let overlapping_timestamp = timestamp + 1800u64;
+    let result = client.try_schedule_withdrawal(&vault_id, &owner, &overlapping_timestamp, &30_000i128);
+    assert!(result.is_err(), "Overlapping withdrawal should be rejected");
 }
 
 #[test]
-fn test_withdrawal_audit_trail_multiple_attempts() {
-    let (env, owner, beneficiary, _, token_address, client) = setup();
-    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
-    client.deposit(&owner, &vault_id, &500_000);
+fn test_schedule_withdrawal_rejects_non_owner() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+    let other = Address::generate(&env);
 
-    client.withdraw(&vault_id, &owner, &50_000);
-    client.withdraw(&vault_id, &owner, &75_000);
-    let _ = client.try_withdraw(&vault_id, &owner, &500_000);
-
-    let audit_log = client.get_withdrawal_audit_log(&vault_id);
-    assert_eq!(audit_log.len(), 3);
-    assert_eq!(audit_log.get(0).unwrap().success, true);
-    assert_eq!(audit_log.get(1).unwrap().success, true);
-    assert_eq!(audit_log.get(2).unwrap().success, false);
+    let timestamp = env.ledger().timestamp() + 3600u64;
+    let result = client.try_schedule_withdrawal(&vault_id, &other, &timestamp, &50_000i128);
+    assert!(result.is_err(), "Non-owner should not be able to schedule withdrawal");
 }
 
-// --- Issue #570: Withdrawal Batching Tests ---
+// --- Issue #566: Withdrawal Limits by Time Tests ---
 
 #[test]
-fn test_batch_withdraw_with_audit_trail() {
-    let (env, owner, beneficiary, _, token_address, client) = setup();
-    let vault_id1 = client.create_vault(&owner, &beneficiary, &3600u64, &None);
-    let vault_id2 = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+fn test_set_withdrawal_limits_success() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+
+    let result = client.try_set_withdrawal_limits(
+        &vault_id,
+        &owner,
+        &10_000i128,
+        &50_000i128,
+        &100_000i128,
+    );
+    assert!(result.is_ok(), "Set withdrawal limits should succeed");
+}
+
+#[test]
+fn test_get_withdrawal_limits() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+
+    client.set_withdrawal_limits(&vault_id, &owner, &10_000i128, &50_000i128, &100_000i128);
+    let limits = client.get_withdrawal_limits(&vault_id);
     
-    client.deposit(&owner, &vault_id1, &100_000);
-    client.deposit(&owner, &vault_id2, &100_000);
-
-    let vault_ids = vec![&env, vault_id1, vault_id2];
-    let amounts = vec![&env, 30_000i128, 40_000i128];
-    client.batch_withdraw(&vault_ids, &amounts, &owner);
-
-    let audit_log1 = client.get_withdrawal_audit_log(&vault_id1);
-    let audit_log2 = client.get_withdrawal_audit_log(&vault_id2);
-    
-    assert_eq!(audit_log1.len(), 1);
-    assert_eq!(audit_log2.len(), 1);
-    assert_eq!(audit_log1.get(0).unwrap().amount, 30_000);
-    assert_eq!(audit_log2.get(0).unwrap().amount, 40_000);
+    assert!(limits.is_some(), "Limits should be retrievable");
+    let limits = limits.unwrap();
+    assert_eq!(limits.daily_limit, 10_000i128);
+    assert_eq!(limits.weekly_limit, 50_000i128);
+    assert_eq!(limits.monthly_limit, 100_000i128);
 }
 
 #[test]
-fn test_batch_withdraw_efficiency() {
-    let (env, owner, beneficiary, _, token_address, client) = setup();
-    let mut vault_ids = vec![&env];
-    let mut amounts = vec![&env];
-    
-    for i in 0..5 {
-        let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
-        client.deposit(&owner, &vault_id, &100_000);
-        vault_ids.push_back(vault_id);
-        amounts.push_back(20_000i128);
-    }
+fn test_withdraw_respects_daily_limit() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+    client.deposit(&vault_id, &owner, &100_000i128);
+    client.set_withdrawal_limits(&vault_id, &owner, &10_000i128, &50_000i128, &100_000i128);
 
-    client.batch_withdraw(&vault_ids, &amounts, &owner);
+    // First withdrawal within limit
+    let result = client.try_withdraw(&vault_id, &owner, &5_000i128);
+    assert!(result.is_ok(), "First withdrawal within limit should succeed");
 
-    for vault_id in vault_ids.iter() {
-        let audit_log = client.get_withdrawal_audit_log(&vault_id);
-        assert_eq!(audit_log.len(), 1);
-        assert_eq!(audit_log.get(0).unwrap().success, true);
-    }
-}
-
-// --- Issue #571: Withdrawal Notifications Tests ---
-
-#[test]
-fn test_withdrawal_notification_event_emitted() {
-    let (env, owner, beneficiary, _, token_address, client) = setup();
-    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
-    client.deposit(&owner, &vault_id, &100_000);
-
-    client.withdraw(&vault_id, &owner, &50_000);
-
-    let events = env.events().all();
-    let withdrawal_notif_events: Vec<_> = events
-        .iter()
-        .filter(|e| {
-            if let soroban_sdk::IntoVal::into_val(e, &env) = e {
-                true
-            } else {
-                false
-            }
-        })
-        .collect();
-    
-    assert!(withdrawal_notif_events.len() > 0);
+    // Second withdrawal exceeding daily limit
+    let result = client.try_withdraw(&vault_id, &owner, &6_000i128);
+    assert!(result.is_err(), "Withdrawal exceeding daily limit should fail");
 }
 
 #[test]
-fn test_batch_withdrawal_notifications() {
-    let (env, owner, beneficiary, _, token_address, client) = setup();
-    let vault_id1 = client.create_vault(&owner, &beneficiary, &3600u64, &None);
-    let vault_id2 = client.create_vault(&owner, &beneficiary, &3600u64, &None);
-    
-    client.deposit(&owner, &vault_id1, &100_000);
-    client.deposit(&owner, &vault_id2, &100_000);
+fn test_withdrawal_limits_reset_after_period() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+    client.deposit(&vault_id, &owner, &100_000i128);
+    client.set_withdrawal_limits(&vault_id, &owner, &10_000i128, &50_000i128, &100_000i128);
 
-    let vault_ids = vec![&env, vault_id1, vault_id2];
-    let amounts = vec![&env, 30_000i128, 40_000i128];
-    client.batch_withdraw(&vault_ids, &amounts, &owner);
+    // First withdrawal
+    client.withdraw(&vault_id, &owner, &5_000i128);
 
-    let events = env.events().all();
-    assert!(events.len() > 0);
+    // Advance time past daily reset (24 hours)
+    env.ledger().with_mut(|l| l.timestamp += 86_401);
+
+    // Should be able to withdraw again
+    let result = client.try_withdraw(&vault_id, &owner, &5_000i128);
+    assert!(result.is_ok(), "Withdrawal should succeed after daily reset");
 }
 
-// --- Issue #572: Withdrawal Dispute Tests ---
+// --- Issue #567: Withdrawal Destination Whitelist Tests ---
 
 #[test]
-fn test_file_withdrawal_dispute() {
-    let (env, owner, beneficiary, _, token_address, client) = setup();
-    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
-    client.deposit(&owner, &vault_id, &100_000);
-    client.withdraw(&vault_id, &owner, &50_000);
+fn test_add_whitelist_address_success() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+    let whitelisted = Address::generate(&env);
 
-    let reason = String::from_str(&env, "Unauthorized withdrawal");
-    client.file_withdrawal_dispute(&vault_id, &owner, &reason);
-
-    let disputes = client.get_withdrawal_disputes(&vault_id);
-    assert_eq!(disputes.len(), 1);
-    let dispute = disputes.get(0).unwrap();
-    assert_eq!(dispute.vault_id, vault_id);
-    assert_eq!(dispute.status, DisputeStatus::Filed);
+    let label = String::from_str(&env, "trusted_address");
+    let result = client.try_add_whitelist_address(&vault_id, &owner, &whitelisted, &label);
+    assert!(result.is_ok(), "Add whitelist address should succeed");
 }
 
 #[test]
-fn test_resolve_withdrawal_dispute() {
-    let (env, owner, beneficiary, _, token_address, client) = setup();
-    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
-    client.deposit(&owner, &vault_id, &100_000);
-    client.withdraw(&vault_id, &owner, &50_000);
+fn test_get_whitelist() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+    let whitelisted = Address::generate(&env);
 
-    let reason = String::from_str(&env, "Unauthorized withdrawal");
-    client.file_withdrawal_dispute(&vault_id, &owner, &reason);
-
-    client.resolve_withdrawal_dispute(&vault_id, &owner, &0u32, &true);
-
-    let disputes = client.get_withdrawal_disputes(&vault_id);
-    assert_eq!(disputes.len(), 1);
-    let dispute = disputes.get(0).unwrap();
-    assert_eq!(dispute.status, DisputeStatus::Resolved);
-    assert!(dispute.resolved_at.is_some());
+    let label = String::from_str(&env, "trusted_address");
+    client.add_whitelist_address(&vault_id, &owner, &whitelisted, &label);
+    
+    let whitelist = client.get_whitelist(&vault_id);
+    assert!(whitelist.is_some(), "Whitelist should be retrievable");
+    assert_eq!(whitelist.unwrap().len(), 1);
 }
 
 #[test]
-fn test_dispute_grace_period() {
-    let (env, owner, beneficiary, _, token_address, client) = setup();
-    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
-    client.deposit(&owner, &vault_id, &100_000);
-    client.withdraw(&vault_id, &owner, &50_000);
+fn test_remove_whitelist_address() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+    let whitelisted = Address::generate(&env);
 
-    let reason = String::from_str(&env, "Unauthorized withdrawal");
-    client.file_withdrawal_dispute(&vault_id, &owner, &reason);
-
-    let disputes = client.get_withdrawal_disputes(&vault_id);
-    let dispute = disputes.get(0).unwrap();
+    let label = String::from_str(&env, "trusted_address");
+    client.add_whitelist_address(&vault_id, &owner, &whitelisted, &label);
+    client.remove_whitelist_address(&vault_id, &owner, &whitelisted);
     
-    let grace_period = 86_400u64; // 24 hours
-    assert_eq!(dispute.dispute_expires_at - dispute.dispute_filed_at, grace_period);
+    let whitelist = client.get_whitelist(&vault_id);
+    assert!(whitelist.is_none() || whitelist.unwrap().len() == 0, "Whitelist should be empty");
 }
 
 #[test]
-fn test_multiple_disputes() {
-    let (env, owner, beneficiary, _, token_address, client) = setup();
-    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
-    client.deposit(&owner, &vault_id, &300_000);
-    
-    client.withdraw(&vault_id, &owner, &50_000);
-    client.withdraw(&vault_id, &owner, &75_000);
+fn test_whitelist_allows_owner_withdrawal() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+    client.deposit(&vault_id, &owner, &100_000i128);
 
-    let reason1 = String::from_str(&env, "First unauthorized withdrawal");
-    let reason2 = String::from_str(&env, "Second unauthorized withdrawal");
-    
-    client.file_withdrawal_dispute(&vault_id, &owner, &reason1);
-    client.file_withdrawal_dispute(&vault_id, &owner, &reason2);
+    // Add owner to whitelist
+    let label = String::from_str(&env, "owner");
+    client.add_whitelist_address(&vault_id, &owner, &owner, &label);
 
-    let disputes = client.get_withdrawal_disputes(&vault_id);
-    assert_eq!(disputes.len(), 2);
-    assert_eq!(disputes.get(0).unwrap().status, DisputeStatus::Filed);
-    assert_eq!(disputes.get(1).unwrap().status, DisputeStatus::Filed);
+    // Withdrawal should succeed
+    let result = client.try_withdraw(&vault_id, &owner, &10_000i128);
+    assert!(result.is_ok(), "Whitelisted owner should be able to withdraw");
+}
+
+// --- Issue #568: Withdrawal Reversal Tests ---
+
+#[test]
+fn test_reverse_withdrawal_success() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+    client.deposit(&vault_id, &owner, &100_000i128);
+
+    let balance_before = client.get_vault(&vault_id).balance;
+    client.withdraw(&vault_id, &owner, &10_000i128);
+    let balance_after_withdrawal = client.get_vault(&vault_id).balance;
+
+    // Reverse the withdrawal
+    let result = client.try_reverse_withdrawal(&vault_id, &owner, &0u64);
+    assert!(result.is_ok(), "Withdrawal reversal should succeed");
+
+    let balance_after_reversal = client.get_vault(&vault_id).balance;
+    assert_eq!(balance_after_reversal, balance_before, "Balance should be restored");
 }
 
 #[test]
-fn test_dispute_only_by_owner() {
-    let (env, owner, beneficiary, _, token_address, client) = setup();
-    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
-    client.deposit(&owner, &vault_id, &100_000);
-    client.withdraw(&vault_id, &owner, &50_000);
+fn test_reverse_withdrawal_rejects_expired_grace_period() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+    client.deposit(&vault_id, &owner, &100_000i128);
 
-    let other_user = Address::generate(&env);
-    let reason = String::from_str(&env, "Unauthorized withdrawal");
+    client.withdraw(&vault_id, &owner, &10_000i128);
+
+    // Advance time past grace period (24 hours + 1 second)
+    env.ledger().with_mut(|l| l.timestamp += 86_401);
+
+    // Reversal should fail
+    let result = client.try_reverse_withdrawal(&vault_id, &owner, &0u64);
+    assert!(result.is_err(), "Reversal after grace period should fail");
+}
+
+#[test]
+fn test_reverse_withdrawal_rejects_non_owner() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+    client.deposit(&vault_id, &owner, &100_000i128);
+
+    client.withdraw(&vault_id, &owner, &10_000i128);
+
+    let other = Address::generate(&env);
+    let result = client.try_reverse_withdrawal(&vault_id, &other, &0u64);
+    assert!(result.is_err(), "Non-owner should not be able to reverse withdrawal");
+}
+
+#[test]
+fn test_get_withdrawal_reversal() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+    client.deposit(&vault_id, &owner, &100_000i128);
+
+    client.withdraw(&vault_id, &owner, &10_000i128);
     
-    let result = client.try_file_withdrawal_dispute(&vault_id, &other_user, &reason);
-    assert!(result.is_err());
+    let reversal = client.get_withdrawal_reversal(&vault_id, &0u64);
+    assert!(reversal.is_some(), "Withdrawal reversal record should exist");
+    let reversal = reversal.unwrap();
+    assert_eq!(reversal.amount, 10_000i128);
+    assert!(!reversal.reversed);
+}
+
+#[test]
+fn test_cannot_reverse_twice() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &86_400u64, &None);
+    client.deposit(&vault_id, &owner, &100_000i128);
+
+    client.withdraw(&vault_id, &owner, &10_000i128);
+    client.reverse_withdrawal(&vault_id, &owner, &0u64);
+
+    // Try to reverse again
+    let result = client.try_reverse_withdrawal(&vault_id, &owner, &0u64);
+    assert!(result.is_err(), "Cannot reverse the same withdrawal twice");
 }

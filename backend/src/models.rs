@@ -92,7 +92,7 @@ pub struct DeviceToken {
     pub registered_at: DateTime<Utc>,
 }
 
-/// Per-owner notification preferences.
+/// Per-owner notification preferences (used by legacy scheduler/reminder engine).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationPreferences {
     pub owner: String,
@@ -114,6 +114,8 @@ impl Default for NotificationPreferences {
         }
     }
 }
+
+
 
 /// A scheduled notification (pending delivery).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -382,13 +384,40 @@ pub enum NotificationFrequency {
     Monthly,
 }
 
+/// HTTP-layer preferences (matches routes/tests).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VaultNotificationPreferences {
-    pub vault_id: String,
-    pub channels: Vec<NotificationChannel>,
-    pub frequency: NotificationFrequency,
-    pub updated_at: DateTime<Utc>,
+pub struct ReminderPreferences {
+    pub vault_id: u64,
+    pub channels: Vec<Channel>,
+    pub hours_before_expiry: u32,
+    pub frequency: Frequency,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultSetPreferencesRequest {
+    pub channels: Vec<Channel>,
+    pub hours_before_expiry: u32,
+    pub frequency: Frequency,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Channel {
+    Email,
+    Sms,
+    Push,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Frequency {
+    Once,
+    Daily,
+    Weekly,
+    Hourly,
+    Monthly,
+}
+
 
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -396,4 +425,6 @@ pub struct NotificationPreferencesRequest {
     pub channels: Vec<NotificationChannel>,
     pub frequency: NotificationFrequency,
 }
+
+
 

@@ -214,15 +214,18 @@ pub fn set_notification_preferences(
     prefs: crate::models::VaultNotificationPreferences,
 
 ) {
-    notif_store.lock().unwrap().insert(prefs.vault_id.clone(), prefs);
+    notif_store
+        .lock()
+        .unwrap()
+        .insert(prefs.owner.clone(), prefs);
 }
 
 pub fn get_notification_preferences(
     notif_store: &NotificationStore,
-    vault_id: &str,
+    owner: &str,
 ) -> Option<crate::models::VaultNotificationPreferences> {
 
-    notif_store.lock().unwrap().get(vault_id).cloned()
+    notif_store.lock().unwrap().get(owner).cloned()
 }
 
 use rusqlite::{params, Connection};
