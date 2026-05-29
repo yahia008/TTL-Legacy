@@ -18,6 +18,7 @@ use types::{
     GeoCheckInEntry,
     ProofOfLifeEntry, ReleaseVoteEntry,
     BeneficiaryRotationEntry,
+    WithdrawalApprovalRequest, PasskeyRecoveryRequest, PasskeyLockout, PasskeyRotationPolicy,
     EXPIRY_WARNING_THRESHOLD, BENEFICIARY_UPDATED_TOPIC, BENEFICIARY_TRIGGER_SET_TOPIC, BENEFICIARY_TIER_SET_TOPIC,
     BENEFICIARY_WATERFALL_TOPIC, BENEFICIARY_REBALANCED_TOPIC, CANCEL_TOPIC, CHECK_IN_TOPIC,
     BeneficiaryCommitment,
@@ -36,6 +37,10 @@ use types::{
     RESTORE_VAULT_TOPIC, PASSKEY_USAGE_TOPIC, VAULT_CLONED_TOPIC, VAULT_CLONED_OVERRIDE_TOPIC, VAULT_MERGED_TOPIC,
     MULTISIG_CONFIG_TOPIC, MULTISIG_PROPOSED_TOPIC, MULTISIG_APPROVED_TOPIC, MULTISIG_REJECTED_TOPIC,
     MULTISIG_EXECUTED_TOPIC, MULTISIG_PROPOSAL_EXPIRY, OWNERSHIP_INITIATED_TOPIC, OWNERSHIP_ACCEPTED_TOPIC,
+    WITHDRAWAL_APPROVAL_REQUESTED_TOPIC, WITHDRAWAL_APPROVAL_GRANTED_TOPIC, WITHDRAWAL_APPROVAL_DENIED_TOPIC,
+    PASSKEY_RECOVERY_INITIATED_TOPIC, PASSKEY_RECOVERED_TOPIC,
+    PASSKEY_LOCKOUT_TOPIC, PASSKEY_UNLOCKED_TOPIC,
+    PASSKEY_ROTATION_REQUIRED_TOPIC, PASSKEY_ROTATION_ENFORCED_TOPIC,
     OWNERSHIP_CANCELLED_TOPIC, MIN_THRESHOLD_SET_TOPIC, MIN_THRESHOLD_SKIP_TOPIC, MIN_THRESHOLD_REDISTRIBUTE_TOPIC,
     DUPLICATE_VAULT_TOPIC,
     MetadataVersionEntry, META_VERSION_TOPIC, META_REVERT_TOPIC, VAULT_ARCHIVED_TOPIC,
@@ -170,6 +175,9 @@ pub enum ContractError {
     InsufficientTtlToAccelerate = 61,
     TtlBorrowNotFound = 62,
     TtlBorrowAlreadyRepaid = 63,
+    PasskeyExpired = 64,
+    PasskeyCompromised = 65,
+    PasskeyRotationRequired = 66,
 }
 
 #[contract]
@@ -4749,6 +4757,135 @@ impl TtlVaultContract {
         env.storage().persistent()
             .get(&DataKey::CheckInGeoLog(vault_id))
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    // --- Issue #564: Withdrawal Approval Workflow ---
+
+    pub fn request_withdrawal_approval(env: Env, vault_id: u64, caller: Address, amount: i128, approvers: Vec<Address>, required_approvals: u32) -> Result<(), ContractError> {
+        caller.require_auth();
+        let vault = Self::load_vault(&env, vault_id);
+        if caller != vault.owner { return Err(ContractError::NotOwner); }
+        if amount <= 0 { return Err(ContractError::InvalidAmount); }
+        if required_approvals == 0 || required_approvals > approvers.len() { return Err(ContractError::InvalidThreshold); }
+        let req = WithdrawalApprovalRequest { amount, requested_at: env.ledger().timestamp(), approvals: Vec::new(&env), required_approvals, expires_at: env.ledger().timestamp() + 604_800 };
+        env.storage().persistent().set(&DataKey::WithdrawalApprovalRequest(vault_id), &req);
+        env.storage().persistent().set(&DataKey::WithdrawalApprovers(vault_id), &approvers);
+        env.events().publish((WITHDRAWAL_APPROVAL_REQUESTED_TOPIC, vault_id), (amount, required_approvals));
+        Ok(())
+    }
+
+    pub fn approve_withdrawal(env: Env, vault_id: u64, caller: Address) -> Result<(), ContractError> {
+        caller.require_auth();
+        let approvers: Vec<Address> = env.storage().persistent().get(&DataKey::WithdrawalApprovers(vault_id)).ok_or(ContractError::WithdrawalNotApproved)?;
+        if !approvers.iter().any(|a| a == caller) { return Err(ContractError::NotASigner); }
+        let mut req: WithdrawalApprovalRequest = env.storage().persistent().get(&DataKey::WithdrawalApprovalRequest(vault_id)).ok_or(ContractError::WithdrawalNotApproved)?;
+        if env.ledger().timestamp() > req.expires_at { return Err(ContractError::ProposalExpired); }
+        if req.approvals.iter().any(|a| a == caller) { return Err(ContractError::AlreadyApproved); }
+        req.approvals.push_back(caller.clone());
+        env.storage().persistent().set(&DataKey::WithdrawalApprovalRequest(vault_id), &req);
+        env.events().publish((WITHDRAWAL_APPROVAL_GRANTED_TOPIC, vault_id), caller);
+        Ok(())
+    }
+
+    pub fn execute_approved_withdrawal(env: Env, vault_id: u64) -> Result<(), ContractError> {
+        let req: WithdrawalApprovalRequest = env.storage().persistent().get(&DataKey::WithdrawalApprovalRequest(vault_id)).ok_or(ContractError::WithdrawalNotApproved)?;
+        if req.approvals.len() < req.required_approvals { return Err(ContractError::ProposalNotApproved); }
+        let mut vault = Self::load_vault(&env, vault_id);
+        if vault.balance < req.amount { return Err(ContractError::InsufficientBalance); }
+        let token_client = token::Client::new(&env, &vault.token_address);
+        token_client.transfer(&env.current_contract_address(), &vault.owner, &req.amount);
+        vault.balance -= req.amount;
+        Self::save_vault(&env, vault_id, &vault);
+        env.storage().persistent().remove(&DataKey::WithdrawalApprovalRequest(vault_id));
+        env.events().publish((WITHDRAW_TOPIC, vault_id), (req.amount, vault.balance));
+        Ok(())
+    }
+
+    // --- Issue #563: Passkey Recovery ---
+
+    pub fn initiate_passkey_recovery(env: Env, vault_id: u64, new_passkey_hash: BytesN<32>, recovery_code: String, contacts: Vec<Address>, required: u32) -> Result<(), ContractError> {
+        if required == 0 || required > contacts.len() { return Err(ContractError::InvalidThreshold); }
+        let req = PasskeyRecoveryRequest { new_passkey_hash: new_passkey_hash.clone(), initiated_at: env.ledger().timestamp(), recovery_code, approved_contacts: Vec::new(&env), required_contacts: required };
+        env.storage().persistent().set(&DataKey::PasskeyRecoveryRequest(vault_id), &req);
+        env.storage().persistent().set(&DataKey::RecoveryContacts(vault_id), &contacts);
+        env.events().publish((PASSKEY_RECOVERY_INITIATED_TOPIC, vault_id), new_passkey_hash);
+        Ok(())
+    }
+
+    pub fn approve_passkey_recovery(env: Env, vault_id: u64, caller: Address) -> Result<(), ContractError> {
+        caller.require_auth();
+        let contacts: Vec<Address> = env.storage().persistent().get(&DataKey::RecoveryContacts(vault_id)).ok_or(ContractError::NotRecoveryContact)?;
+        if !contacts.iter().any(|c| c == caller) { return Err(ContractError::NotRecoveryContact); }
+        let mut req: PasskeyRecoveryRequest = env.storage().persistent().get(&DataKey::PasskeyRecoveryRequest(vault_id)).ok_or(ContractError::NotRecoveryContact)?;
+        if req.approved_contacts.iter().any(|c| c == caller) { return Err(ContractError::AlreadyApproved); }
+        req.approved_contacts.push_back(caller.clone());
+        if req.approved_contacts.len() >= req.required_contacts {
+            let key = DataKey::VaultPasskeys(vault_id);
+            let mut passkeys: Vec<PasskeyHash> = env.storage().persistent().get(&key).unwrap_or(Vec::new(&env));
+            passkeys.push_back(PasskeyHash { hash: req.new_passkey_hash.clone(), added_at: env.ledger().timestamp() });
+            env.storage().persistent().set(&key, &passkeys);
+            env.storage().persistent().remove(&DataKey::PasskeyRecoveryRequest(vault_id));
+            env.events().publish((PASSKEY_RECOVERED_TOPIC, vault_id), req.new_passkey_hash);
+        } else {
+            env.storage().persistent().set(&DataKey::PasskeyRecoveryRequest(vault_id), &req);
+        }
+        Ok(())
+    }
+
+    // --- Issue #562: Passkey Compromise Response ---
+
+    pub fn lockout_vault(env: Env, vault_id: u64, duration_seconds: u64) -> Result<(), ContractError> {
+        let vault = Self::load_vault(&env, vault_id);
+        vault.owner.require_auth();
+        let lockout = PasskeyLockout { locked_at: env.ledger().timestamp(), unlock_at: env.ledger().timestamp() + duration_seconds, failed_attempts: 0 };
+        env.storage().persistent().set(&DataKey::PasskeyLockout(vault_id), &lockout);
+        env.events().publish((PASSKEY_LOCKOUT_TOPIC, vault_id), duration_seconds);
+        Ok(())
+    }
+
+    pub fn unlock_vault(env: Env, vault_id: u64, caller: Address) -> Result<(), ContractError> {
+        caller.require_auth();
+        let vault = Self::load_vault(&env, vault_id);
+        if caller != vault.owner { return Err(ContractError::NotOwner); }
+        env.storage().persistent().remove(&DataKey::PasskeyLockout(vault_id));
+        env.events().publish((PASSKEY_UNLOCKED_TOPIC, vault_id), caller);
+        Ok(())
+    }
+
+    pub fn is_vault_locked(env: Env, vault_id: u64) -> bool {
+        if let Some(lockout) = env.storage().persistent().get::<DataKey, PasskeyLockout>(&DataKey::PasskeyLockout(vault_id)) {
+            env.ledger().timestamp() < lockout.unlock_at
+        } else { false }
+    }
+
+    // --- Issue #561: Passkey Rotation Enforcement ---
+
+    pub fn set_passkey_rotation_policy(env: Env, vault_id: u64, caller: Address, rotation_period_days: u32, enforce: bool) -> Result<(), ContractError> {
+        caller.require_auth();
+        let vault = Self::load_vault(&env, vault_id);
+        if caller != vault.owner { return Err(ContractError::NotOwner); }
+        let policy = PasskeyRotationPolicy { rotation_period_days, enforce };
+        env.storage().persistent().set(&DataKey::PasskeyRotationPolicy(vault_id), &policy);
+        env.events().publish((PASSKEY_ROTATION_REQUIRED_TOPIC, vault_id), (rotation_period_days, enforce));
+        Ok(())
+    }
+
+    pub fn enforce_passkey_rotation(env: Env, vault_id: u64, passkey_hash: BytesN<32>) -> Result<bool, ContractError> {
+        let policy: PasskeyRotationPolicy = env.storage().persistent().get(&DataKey::PasskeyRotationPolicy(vault_id)).unwrap_or(PasskeyRotationPolicy { rotation_period_days: 0, enforce: false });
+        if !policy.enforce || policy.rotation_period_days == 0 { return Ok(true); }
+        if let Some(last_rotation) = env.storage().persistent().get::<DataKey, u64>(&DataKey::LastPasskeyRotation(vault_id, passkey_hash.clone())) {
+            let elapsed_days = (env.ledger().timestamp() - last_rotation) / 86_400;
+            if elapsed_days >= policy.rotation_period_days as u64 {
+                env.events().publish((PASSKEY_ROTATION_ENFORCED_TOPIC, vault_id), passkey_hash);
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    pub fn record_passkey_rotation(env: Env, vault_id: u64, passkey_hash: BytesN<32>) -> Result<(), ContractError> {
+        env.storage().persistent().set(&DataKey::LastPasskeyRotation(vault_id, passkey_hash), &env.ledger().timestamp());
+        Ok(())
     }
 
     fn append_activity_log(env: &Env, vault_id: u64, action: &str, caller: &Address, _details: &str) {

@@ -107,6 +107,19 @@ pub const VESTING_FINALIZED_TOPIC: Symbol = symbol_short!("vest_fin");
 pub const PASSKEY_EXPIRED_TOPIC: Symbol = symbol_short!("pk_expd");
 // Issue #550: passkey compromise detected or reported
 pub const PASSKEY_COMPROMISED_TOPIC: Symbol = symbol_short!("pk_comp");
+// Issue #564: withdrawal approval workflow
+pub const WITHDRAWAL_APPROVAL_REQUESTED_TOPIC: Symbol = symbol_short!("wd_req");
+pub const WITHDRAWAL_APPROVAL_GRANTED_TOPIC: Symbol = symbol_short!("wd_grant");
+pub const WITHDRAWAL_APPROVAL_DENIED_TOPIC: Symbol = symbol_short!("wd_deny");
+// Issue #563: passkey recovery
+pub const PASSKEY_RECOVERY_INITIATED_TOPIC: Symbol = symbol_short!("pk_rec");
+pub const PASSKEY_RECOVERED_TOPIC: Symbol = symbol_short!("pk_rcvd");
+// Issue #562: passkey compromise response
+pub const PASSKEY_LOCKOUT_TOPIC: Symbol = symbol_short!("pk_lock");
+pub const PASSKEY_UNLOCKED_TOPIC: Symbol = symbol_short!("pk_unlk");
+// Issue #561: passkey rotation enforcement
+pub const PASSKEY_ROTATION_REQUIRED_TOPIC: Symbol = symbol_short!("pk_rot_r");
+pub const PASSKEY_ROTATION_ENFORCED_TOPIC: Symbol = symbol_short!("pk_rot_e");
 
 // Issue: TTL Borrowing
 pub const TTL_BORROW_TOPIC: Symbol = symbol_short!("ttl_bor");
@@ -254,6 +267,18 @@ pub enum DataKey {
     TtlBorrow(u64),
     // Issue #553: encrypted backup codes
     EncryptedBackupCodes(u64),
+    // Issue #564: withdrawal approval workflow
+    WithdrawalApprovalRequest(u64),
+    WithdrawalApprovers(u64),
+    // Issue #563: passkey recovery
+    PasskeyRecoveryRequest(u64),
+    RecoveryContacts(u64),
+    // Issue #562: passkey compromise response
+    PasskeyLockout(u64),
+    CompromisedPasskeys(u64),
+    // Issue #561: passkey rotation enforcement
+    PasskeyRotationPolicy(u64),
+    LastPasskeyRotation(u64, BytesN<32>),
 }
 
 /// Check-in history entry for TTL prediction - Issue #482
@@ -801,4 +826,44 @@ pub struct BeneficiaryRotationEntry {
 pub struct CountdownConfig {
     /// Sorted descending list of thresholds in seconds (e.g. [604800, 259200, 86400]).
     pub thresholds: Vec<u64>,
+}
+
+
+// Issue #564: Withdrawal Approval Workflow
+#[contracttype]
+#[derive(Clone)]
+pub struct WithdrawalApprovalRequest {
+    pub amount: i128,
+    pub requested_at: u64,
+    pub approvals: Vec<Address>,
+    pub required_approvals: u32,
+    pub expires_at: u64,
+}
+
+// Issue #563: Passkey Recovery
+#[contracttype]
+#[derive(Clone)]
+pub struct PasskeyRecoveryRequest {
+    pub new_passkey_hash: BytesN<32>,
+    pub initiated_at: u64,
+    pub recovery_code: String,
+    pub approved_contacts: Vec<Address>,
+    pub required_contacts: u32,
+}
+
+// Issue #562: Passkey Compromise Response
+#[contracttype]
+#[derive(Clone)]
+pub struct PasskeyLockout {
+    pub locked_at: u64,
+    pub unlock_at: u64,
+    pub failed_attempts: u32,
+}
+
+// Issue #561: Passkey Rotation Enforcement
+#[contracttype]
+#[derive(Clone)]
+pub struct PasskeyRotationPolicy {
+    pub rotation_period_days: u32,
+    pub enforce: bool,
 }
