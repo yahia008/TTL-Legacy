@@ -91,6 +91,7 @@ pub const MILESTONE_PROGRESS_TOPIC: Symbol = symbol_short!("m_prog");
 pub const MILESTONE_CLAIM_TOPIC: Symbol = symbol_short!("m_clm");
 pub const MILESTONE_PAUSE_TOPIC: Symbol = symbol_short!("m_paus");
 pub const MILESTONE_RESUME_TOPIC: Symbol = symbol_short!("m_resm");
+pub const MILESTONE_ADJUST_TOPIC: Symbol = symbol_short!("m_adj");
 
 // Issue: TTL Borrowing
 pub const TTL_BORROW_TOPIC: Symbol = symbol_short!("ttl_bor");

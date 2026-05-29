@@ -40,7 +40,7 @@ use types::{
     ProofOfLifeEntry, ReleaseVoteEntry,
     PROOF_OF_LIFE_TOPIC, RELEASE_VOTE_TOPIC, RELEASE_VOTE_PASSED_TOPIC,
     MILESTONE_VEST_TOPIC, MILESTONE_PROGRESS_TOPIC, MILESTONE_CLAIM_TOPIC,
-    MILESTONE_PAUSE_TOPIC, MILESTONE_RESUME_TOPIC,
+    MILESTONE_PAUSE_TOPIC, MILESTONE_RESUME_TOPIC, MILESTONE_ADJUST_TOPIC,
     CHECKIN_GEO_TOPIC, CHECKIN_RATE_LIMITED_TOPIC, TTL_ACCELERATE_TOPIC,
     TTL_BORROW_TOPIC, TTL_REPAY_TOPIC,
 };
@@ -2173,6 +2173,70 @@ impl TtlVaultContract {
         env.storage().persistent().extend_ttl(&key, VAULT_TTL_THRESHOLD, ttl);
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
         env.events().publish((MILESTONE_RESUME_TOPIC, vault_id), false);
+        Ok(())
+    }
+
+    /// Adjusts milestone targets to slow down vesting.
+    ///
+    /// Only the vault owner can call this. Increases the `target_value` of unfulfilled
+    /// milestones, making them harder to reach. Already-fulfilled milestones are
+    /// unaffected. This allows the owner to respond to changing circumstances without
+    /// cancelling the vesting schedule.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `vault_id` - The vault ID
+    /// * `caller` - The address of the caller (must be vault owner)
+    /// * `adjustments` - Vector of `(milestone_index, new_target_value)` pairs
+    ///
+    /// # Errors
+    /// * `ContractError::Paused` - If the contract is paused
+    /// * `ContractError::NotOwner` - If caller is not the vault owner
+    /// * `ContractError::VestingNotFound` - If no milestone vesting schedule exists
+    /// * `ContractError::InvalidAmount` - If any milestone is already fulfilled
+    pub fn adjust_milestone_targets(
+        env: Env,
+        vault_id: u64,
+        caller: Address,
+        adjustments: Vec<(u32, i128)>,
+    ) -> Result<(), ContractError> {
+        Self::assert_not_paused(&env);
+        caller.require_auth();
+        let vault = Self::load_vault(&env, vault_id);
+        if caller != vault.owner {
+            return Err(ContractError::NotOwner);
+        }
+
+        let key = DataKey::MilestoneVestingSchedule(vault_id);
+        let mut schedule: MilestoneVestingSchedule = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::VestingNotFound)?;
+
+        for (idx, new_target) in adjustments.iter() {
+            if idx >= schedule.milestones.len() {
+                return Err(ContractError::InvalidAmount);
+            }
+            let milestone = schedule.milestones.get(idx).unwrap();
+            if milestone.is_fulfilled {
+                return Err(ContractError::InvalidAmount);
+            }
+            schedule.milestones.set(idx, MilestoneEntry {
+                label: milestone.label,
+                target_value: new_target,
+                current_value: milestone.current_value,
+                bps: milestone.bps,
+                is_fulfilled: milestone.is_fulfilled,
+                claimed: milestone.claimed,
+            });
+        }
+
+        let ttl = vault_ttl_ledgers(vault.check_in_interval);
+        env.storage().persistent().set(&key, &schedule);
+        env.storage().persistent().extend_ttl(&key, VAULT_TTL_THRESHOLD, ttl);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
+        env.events().publish((MILESTONE_ADJUST_TOPIC, vault_id), ());
         Ok(())
     }
 
