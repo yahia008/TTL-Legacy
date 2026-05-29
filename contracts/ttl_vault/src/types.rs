@@ -98,6 +98,18 @@ pub const DUPLICATE_VAULT_TOPIC: Symbol = symbol_short!("dup_vault");
 pub const MIN_THRESHOLD_SET_TOPIC: Symbol = symbol_short!("min_thr");
 pub const MIN_THRESHOLD_SKIP_TOPIC: Symbol = symbol_short!("min_skip");
 pub const MIN_THRESHOLD_REDISTRIBUTE_TOPIC: Symbol = symbol_short!("min_rdst");
+// Issue #565: withdrawal scheduling validation
+pub const WITHDRAWAL_VALIDATION_TOPIC: Symbol = symbol_short!("wd_val");
+// Issue #566: withdrawal limits by time
+pub const WITHDRAWAL_LIMIT_SET_TOPIC: Symbol = symbol_short!("wd_lim");
+pub const WITHDRAWAL_LIMIT_EXCEEDED_TOPIC: Symbol = symbol_short!("wd_exc");
+// Issue #567: withdrawal destination whitelist
+pub const WHITELIST_ADDED_TOPIC: Symbol = symbol_short!("wl_add");
+pub const WHITELIST_REMOVED_TOPIC: Symbol = symbol_short!("wl_rem");
+pub const WHITELIST_VIOLATION_TOPIC: Symbol = symbol_short!("wl_vio");
+// Issue #568: withdrawal reversal
+pub const WITHDRAWAL_REVERSED_TOPIC: Symbol = symbol_short!("wd_rev");
+pub const REVERSAL_GRACE_EXPIRED_TOPIC: Symbol = symbol_short!("rev_exp");
 // Issue #547: vesting penalty applied
 pub const VESTING_PENALTY_TOPIC: Symbol = symbol_short!("vest_pen");
 // Issue #548: vesting claim reversed / finalized
@@ -254,6 +266,16 @@ pub enum DataKey {
     TtlBorrow(u64),
     // Issue #553: encrypted backup codes
     EncryptedBackupCodes(u64),
+    // Issue #565: withdrawal scheduling validation
+    WithdrawalScheduleValidation(u64),
+    // Issue #566: withdrawal limits by time
+    WithdrawalLimit(u64),
+    WithdrawalTracker(u64),
+    // Issue #567: withdrawal destination whitelist
+    WithdrawalWhitelist(u64),
+    // Issue #568: withdrawal reversal
+    WithdrawalReversal(u64, u64), // (vault_id, withdrawal_id)
+    WithdrawalReversalCounter(u64),
 }
 
 /// Check-in history entry for TTL prediction - Issue #482
@@ -801,4 +823,45 @@ pub struct BeneficiaryRotationEntry {
 pub struct CountdownConfig {
     /// Sorted descending list of thresholds in seconds (e.g. [604800, 259200, 86400]).
     pub thresholds: Vec<u64>,
+}
+
+/// Withdrawal limit configuration - Issue #566
+#[contracttype]
+#[derive(Clone)]
+pub struct WithdrawalLimit {
+    pub daily_limit: i128,
+    pub weekly_limit: i128,
+    pub monthly_limit: i128,
+}
+
+/// Withdrawal tracking entry - Issue #566
+#[contracttype]
+#[derive(Clone)]
+pub struct WithdrawalTracker {
+    pub daily_withdrawn: i128,
+    pub daily_reset_at: u64,
+    pub weekly_withdrawn: i128,
+    pub weekly_reset_at: u64,
+    pub monthly_withdrawn: i128,
+    pub monthly_reset_at: u64,
+}
+
+/// Withdrawal destination whitelist entry - Issue #567
+#[contracttype]
+#[derive(Clone)]
+pub struct WhitelistEntry {
+    pub address: Address,
+    pub added_at: u64,
+    pub label: String,
+}
+
+/// Withdrawal reversal entry - Issue #568
+#[contracttype]
+#[derive(Clone)]
+pub struct WithdrawalReversal {
+    pub withdrawal_id: u64,
+    pub amount: i128,
+    pub withdrawn_at: u64,
+    pub grace_period_until: u64,
+    pub reversed: bool,
 }
