@@ -187,6 +187,16 @@ pub const BENEFICIARY_TIER_SET_TOPIC: Symbol = symbol_short!("ben_tier");
 pub const BENEFICIARY_WATERFALL_TOPIC: Symbol = symbol_short!("ben_wfl");
 pub const BENEFICIARY_REBALANCED_TOPIC: Symbol = symbol_short!("ben_reb");
 
+// Issue #573: Withdrawal Proof
+pub const WITHDRAWAL_PROOF_TOPIC: Symbol = symbol_short!("wd_prf");
+// Issue #574: Withdrawal Rollback
+pub const WITHDRAWAL_ROLLBACK_TOPIC: Symbol = symbol_short!("wd_rbk");
+// Issue #575: Withdrawal Rate Limiting
+pub const WITHDRAWAL_RATE_LIMITED_TOPIC: Symbol = symbol_short!("wd_rl");
+// Issue #576: Withdrawal Escrow
+pub const WITHDRAWAL_ESCROW_CREATED_TOPIC: Symbol = symbol_short!("wd_esc");
+pub const WITHDRAWAL_ESCROW_VERIFIED_TOPIC: Symbol = symbol_short!("wd_ver");
+
 /// Warning threshold in seconds. If TTL remaining < this value, ping_expiry emits an event.
 pub const EXPIRY_WARNING_THRESHOLD: u64 = 86_400; // 24 hours
 
@@ -451,6 +461,49 @@ pub struct DepositProof {
     pub amount: i128,
     pub timestamp: u64,
     pub proof_hash: BytesN<32>,
+}
+
+/// Withdrawal proof for compliance - Issue #573
+#[contracttype]
+#[derive(Clone)]
+pub struct WithdrawalProof {
+    pub vault_id: u64,
+    pub amount: i128,
+    pub timestamp: u64,
+    pub proof_hash: BytesN<32>,
+    pub nonce: u64,
+}
+
+/// Withdrawal escrow entry - Issue #576
+#[contracttype]
+#[derive(Clone)]
+pub struct WithdrawalEscrow {
+    pub vault_id: u64,
+    pub amount: i128,
+    pub timestamp: u64,
+    pub beneficiary: Address,
+    pub verified: bool,
+}
+
+/// Withdrawal rollback entry - Issue #574
+#[contracttype]
+#[derive(Clone)]
+pub struct WithdrawalRollback {
+    pub vault_id: u64,
+    pub original_amount: i128,
+    pub rollback_amount: i128,
+    pub timestamp: u64,
+    pub reason: String,
+}
+
+/// Withdrawal rate limit entry - Issue #575
+#[contracttype]
+#[derive(Clone)]
+pub struct WithdrawalRateLimit {
+    pub vault_id: u64,
+    pub last_withdrawal_time: u64,
+    pub withdrawal_count: u32,
+    pub cooldown_seconds: u64,
 }
 
 #[contracttype]
