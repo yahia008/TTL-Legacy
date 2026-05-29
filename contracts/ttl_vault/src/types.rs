@@ -94,6 +94,10 @@ pub const RELEASE_VOTE_PASSED_TOPIC: Symbol = symbol_short!("vote_ok");
 pub const HIBERNATION_ENTERED_TOPIC: Symbol = symbol_short!("hib_ent");
 pub const HIBERNATION_EXITED_TOPIC: Symbol = symbol_short!("hib_ext");
 
+pub const DUPLICATE_VAULT_TOPIC: Symbol = symbol_short!("dup_vault");
+pub const MIN_THRESHOLD_SET_TOPIC: Symbol = symbol_short!("min_thr");
+pub const MIN_THRESHOLD_SKIP_TOPIC: Symbol = symbol_short!("min_skip");
+pub const MIN_THRESHOLD_REDISTRIBUTE_TOPIC: Symbol = symbol_short!("min_rdst");
 // Issue #547: vesting penalty applied
 pub const VESTING_PENALTY_TOPIC: Symbol = symbol_short!("vest_pen");
 // Issue #548: vesting claim reversed / finalized
@@ -155,6 +159,11 @@ pub const ARBITRATION_RULED_TOPIC: Symbol = symbol_short!("arb_rul");
 // Issue #497: Beneficiary Notification
 pub const VAULT_NOTIFY_TOPIC: Symbol = symbol_short!("v_notif");
 
+pub const BENEFICIARY_TRIGGER_SET_TOPIC: Symbol = symbol_short!("ben_trg");
+pub const BENEFICIARY_TIER_SET_TOPIC: Symbol = symbol_short!("ben_tier");
+pub const BENEFICIARY_WATERFALL_TOPIC: Symbol = symbol_short!("ben_wfl");
+pub const BENEFICIARY_REBALANCED_TOPIC: Symbol = symbol_short!("ben_reb");
+
 /// Warning threshold in seconds. If TTL remaining < this value, ping_expiry emits an event.
 pub const EXPIRY_WARNING_THRESHOLD: u64 = 86_400; // 24 hours
 
@@ -177,7 +186,7 @@ pub const MAX_NOTES_LEN: u32 = 1024;
 /// Maximum length for custom metadata bytes (2KB) - Issue #378
 pub const MAX_CUSTOM_METADATA_LEN: u32 = 2048;
 
-#[contracttype]
+#[contracttype(export = false)]
 #[derive(Clone)]
 pub enum DataKey {
     Vault(u64),
@@ -232,8 +241,17 @@ pub enum DataKey {
     // Issue #499: beneficiary release votes
     ReleaseVotes(u64),
     ReleaseVoteThreshold(u64),
+    BeneficiaryReleaseTriggers(u64),
+    BeneficiaryTierThreshold(u64, Address),
+    BeneficiaryStatusEntry(u64, Address),
     // Hibernation: temporary suspension of check-in requirement
     Hibernation(u64),
+    LastCheckInTime(u64),
+    MinCheckInCooldown,
+    VaultDuplicate(Address, Address, u64),
+    BeneficiaryRotationSchedule(u64),
+    CheckInGeoLog(u64),
+    TtlBorrow(u64),
     // Issue #553: encrypted backup codes
     EncryptedBackupCodes(u64),
 }
@@ -427,7 +445,7 @@ pub struct Vault {
     /// Parent vault ID for inheritance chain - Issue #381
     pub parent_vault_id: Option<u64>,
     /// Primary passkey hash for backwards compatibility - Issue #392, #394
-    pub passkey_hash: Option<BytesN<32>>,
+    pub passkey_hash: Option<Bytes>,
     /// Maximum deposit amount - Issue #403
     pub max_deposit_amount: Option<i128>,
     /// Withdrawal approval threshold - Issue #404
@@ -455,6 +473,44 @@ pub enum BeneficiaryStatus {
     Pending,
     Accepted,
     Declined,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReleaseTrigger {
+    Expiry,
+    Manual,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct BeneficiaryTriggerSetEvent {
+    pub vault_id: u64,
+    pub beneficiary: Address,
+    pub triggers: Vec<ReleaseTrigger>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct BeneficiaryTierSetEvent {
+    pub vault_id: u64,
+    pub beneficiary: Address,
+    pub tier_threshold: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct BeneficiaryWaterfallEvent {
+    pub vault_id: u64,
+    pub skipped_beneficiary: Address,
+    pub reason: String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct BeneficiaryRebalancedEvent {
+    pub vault_id: u64,
+    pub remaining_bps: u32,
 }
 
 /// Dispute status enum - Issue #399
@@ -696,6 +752,46 @@ pub struct HibernationEntry {
     pub duration_seconds: u64,
 }
 
+#[contracttype]
+#[derive(Clone)]
+pub struct TtlBorrowRecord {
+    pub borrower_vault_id: u64,
+    pub lender_vault_id: u64,
+    pub borrowed_seconds: u64,
+    pub borrowed_at: u64,
+    pub repaid: bool,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct GeoCheckInEntry {
+    pub latitude_micro: i64,
+    pub longitude_micro: i64,
+    pub country_code: String,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct ProofOfLifeEntry {
+    pub beneficiary: Address,
+    pub submitted_at: u64,
+    pub valid_until: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct ReleaseVoteEntry {
+    pub voter: Address,
+    pub approve: bool,
+    pub voted_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct BeneficiaryRotationEntry {
+    pub effective_timestamp: u64,
+    pub new_beneficiaries: Vec<BeneficiaryEntry>,
 /// Configurable countdown notification thresholds for a vault.
 /// Each threshold (in seconds before expiry) triggers a `cd_notif` event
 /// when `check_countdown` is called and the TTL crosses that boundary.
