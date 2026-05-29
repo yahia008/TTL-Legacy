@@ -164,6 +164,17 @@ pub const BENEFICIARY_TIER_SET_TOPIC: Symbol = symbol_short!("ben_tier");
 pub const BENEFICIARY_WATERFALL_TOPIC: Symbol = symbol_short!("ben_wfl");
 pub const BENEFICIARY_REBALANCED_TOPIC: Symbol = symbol_short!("ben_reb");
 
+// Issue #581: Token Conversion
+pub const TOKEN_CONVERSION_TOPIC: Symbol = symbol_short!("tok_conv");
+// Issue #582: Token Whitelisting Validation
+pub const TOKEN_WHITELIST_VALIDATED_TOPIC: Symbol = symbol_short!("tok_wl_v");
+// Issue #583: Token Staking
+pub const TOKEN_STAKING_TOPIC: Symbol = symbol_short!("tok_stk");
+pub const TOKEN_UNSTAKING_TOPIC: Symbol = symbol_short!("tok_unstk");
+// Issue #584: Token Yield Distribution
+pub const YIELD_DISTRIBUTED_TOPIC: Symbol = symbol_short!("yld_dist");
+pub const YIELD_REINVESTED_TOPIC: Symbol = symbol_short!("yld_reinv");
+
 /// Warning threshold in seconds. If TTL remaining < this value, ping_expiry emits an event.
 pub const EXPIRY_WARNING_THRESHOLD: u64 = 86_400; // 24 hours
 
@@ -254,6 +265,13 @@ pub enum DataKey {
     TtlBorrow(u64),
     // Issue #553: encrypted backup codes
     EncryptedBackupCodes(u64),
+    // Issue #581: Token Conversion
+    TokenConversion(u64),
+    // Issue #583: Token Staking
+    TokenStaking(u64),
+    StakingYield(u64),
+    // Issue #584: Yield Distribution Config
+    YieldDistributionConfig(u64),
 }
 
 /// Check-in history entry for TTL prediction - Issue #482
@@ -792,6 +810,8 @@ pub struct ReleaseVoteEntry {
 pub struct BeneficiaryRotationEntry {
     pub effective_timestamp: u64,
     pub new_beneficiaries: Vec<BeneficiaryEntry>,
+}
+
 /// Configurable countdown notification thresholds for a vault.
 /// Each threshold (in seconds before expiry) triggers a `cd_notif` event
 /// when `check_countdown` is called and the TTL crosses that boundary.
@@ -801,4 +821,57 @@ pub struct BeneficiaryRotationEntry {
 pub struct CountdownConfig {
     /// Sorted descending list of thresholds in seconds (e.g. [604800, 259200, 86400]).
     pub thresholds: Vec<u64>,
+}
+
+// Issue #581: Token Conversion
+/// Token conversion configuration for a vault.
+/// Allows converting vault tokens to different tokens before release.
+#[contracttype]
+#[derive(Clone)]
+pub struct TokenConversion {
+    pub vault_id: u64,
+    pub from_token: Address,
+    pub to_token: Address,
+    pub conversion_rate: i128, // in basis points (10000 = 1:1)
+    pub enabled: bool,
+    pub created_at: u64,
+}
+
+// Issue #583: Token Staking
+/// Token staking configuration for a vault.
+/// Allows vault tokens to be staked for yield while locked.
+#[contracttype]
+#[derive(Clone)]
+pub struct TokenStaking {
+    pub vault_id: u64,
+    pub staking_pool: Address,
+    pub staked_amount: i128,
+    pub staking_start: u64,
+    pub annual_yield_bps: u32, // basis points (e.g., 500 = 5%)
+    pub is_active: bool,
+}
+
+// Issue #584: Yield Distribution
+/// Yield distribution configuration for a vault.
+/// Determines how staking yield is distributed or reinvested.
+#[contracttype]
+#[derive(Clone)]
+pub enum YieldDistributionMode {
+    /// Distribute yield to beneficiary
+    DistributeToBeneficiary,
+    /// Reinvest yield back into vault
+    Reinvest,
+    /// Split yield between beneficiary and reinvestment
+    Split(u32), // basis points for beneficiary (rest reinvested)
+}
+
+/// Yield distribution configuration entry
+#[contracttype]
+#[derive(Clone)]
+pub struct YieldDistributionConfig {
+    pub vault_id: u64,
+    pub mode: YieldDistributionMode,
+    pub last_distribution: u64,
+    pub total_distributed: i128,
+    pub total_reinvested: i128,
 }

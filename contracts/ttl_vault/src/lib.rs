@@ -52,6 +52,10 @@ use types::{
     CHECKIN_RATE_LIMITED_TOPIC, TTL_ACCELERATE_TOPIC, CHECKIN_GEO_TOPIC,
     EncryptedBackupCodes, PasskeyAnalytics, PasskeyUsageStat,
     BACKUP_CODES_ENCRYPTED_TOPIC, PASSKEY_ANALYTICS_TOPIC,
+    // Issue #581-584: Token management
+    TOKEN_CONVERSION_TOPIC, TOKEN_WHITELIST_VALIDATED_TOPIC, TOKEN_STAKING_TOPIC,
+    TOKEN_UNSTAKING_TOPIC, YIELD_DISTRIBUTED_TOPIC, YIELD_REINVESTED_TOPIC,
+    TokenConversion, TokenStaking, YieldDistributionConfig, YieldDistributionMode,
 };
 #[cfg(test)]
 mod regression_tests;
@@ -525,6 +529,265 @@ impl TtlVaultContract {
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
     }
 
+    // --- Issue #581: Token Conversion ---
+
+    /// Enables token conversion for a vault.
+    /// Allows converting vault tokens to different tokens before release.
+    ///
+    /// # Arguments
+    /// * `vault_id` - The vault ID
+    /// * `from_token` - The source token address
+    /// * `to_token` - The target token address
+    /// * `conversion_rate` - Conversion rate in basis points (10000 = 1:1)
+    ///
+    /// # Panics
+    /// * Panics if caller is not the vault owner
+    /// * Panics if target token is not whitelisted
+    pub fn enable_token_conversion(
+        env: Env,
+        vault_id: u64,
+        from_token: Address,
+        to_token: Address,
+        conversion_rate: i128,
+    ) {
+        let vault = Self::load_vault(&env, vault_id);
+        vault.owner.require_auth();
+
+        // Validate tokens are whitelisted
+        Self::assert_token_whitelisted(&env, &from_token);
+        Self::assert_token_whitelisted(&env, &to_token);
+
+        let conversion = TokenConversion {
+            vault_id,
+            from_token: from_token.clone(),
+            to_token: to_token.clone(),
+            conversion_rate,
+            enabled: true,
+            created_at: env.ledger().timestamp(),
+        };
+
+        let key = DataKey::TokenConversion(vault_id);
+        env.storage().persistent().set(&key, &conversion);
+        env.storage().persistent().extend_ttl(&key, VAULT_TTL_THRESHOLD, VAULT_TTL_LEDGERS);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
+
+        env.events().publish(
+            (TOKEN_CONVERSION_TOPIC, vault_id),
+            (&from_token, &to_token, conversion_rate),
+        );
+    }
+
+    /// Gets the token conversion configuration for a vault.
+    pub fn get_token_conversion(env: Env, vault_id: u64) -> Option<TokenConversion> {
+        let key = DataKey::TokenConversion(vault_id);
+        env.storage().persistent().get(&key)
+    }
+
+    // --- Issue #583: Token Staking ---
+
+    /// Enables token staking for a vault.
+    /// Allows vault tokens to be staked for yield while locked.
+    ///
+    /// # Arguments
+    /// * `vault_id` - The vault ID
+    /// * `staking_pool` - The staking pool contract address
+    /// * `annual_yield_bps` - Annual yield in basis points (e.g., 500 = 5%)
+    ///
+    /// # Panics
+    /// * Panics if caller is not the vault owner
+    pub fn enable_token_staking(
+        env: Env,
+        vault_id: u64,
+        staking_pool: Address,
+        annual_yield_bps: u32,
+    ) {
+        let vault = Self::load_vault(&env, vault_id);
+        vault.owner.require_auth();
+
+        let staking = TokenStaking {
+            vault_id,
+            staking_pool: staking_pool.clone(),
+            staked_amount: 0,
+            staking_start: env.ledger().timestamp(),
+            annual_yield_bps,
+            is_active: true,
+        };
+
+        let key = DataKey::TokenStaking(vault_id);
+        env.storage().persistent().set(&key, &staking);
+        env.storage().persistent().extend_ttl(&key, VAULT_TTL_THRESHOLD, VAULT_TTL_LEDGERS);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
+
+        env.events().publish(
+            (TOKEN_STAKING_TOPIC, vault_id),
+            (&staking_pool, annual_yield_bps),
+        );
+    }
+
+    /// Disables token staking for a vault.
+    pub fn disable_token_staking(env: Env, vault_id: u64) {
+        let vault = Self::load_vault(&env, vault_id);
+        vault.owner.require_auth();
+
+        let key = DataKey::TokenStaking(vault_id);
+        if let Some(mut staking) = env.storage().persistent().get::<DataKey, TokenStaking>(&key) {
+            staking.is_active = false;
+            env.storage().persistent().set(&key, &staking);
+            env.storage().persistent().extend_ttl(&key, VAULT_TTL_THRESHOLD, VAULT_TTL_LEDGERS);
+        }
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
+
+        env.events().publish((TOKEN_UNSTAKING_TOPIC, vault_id), vault_id);
+    }
+
+    /// Gets the token staking configuration for a vault.
+    pub fn get_token_staking(env: Env, vault_id: u64) -> Option<TokenStaking> {
+        let key = DataKey::TokenStaking(vault_id);
+        env.storage().persistent().get(&key)
+    }
+
+    // --- Issue #584: Token Yield Distribution ---
+
+    /// Configures yield distribution for a vault.
+    /// Determines how staking yield is distributed or reinvested.
+    ///
+    /// # Arguments
+    /// * `vault_id` - The vault ID
+    /// * `mode` - The yield distribution mode
+    ///
+    /// # Panics
+    /// * Panics if caller is not the vault owner
+    pub fn set_yield_distribution(
+        env: Env,
+        vault_id: u64,
+        mode: YieldDistributionMode,
+    ) {
+        let vault = Self::load_vault(&env, vault_id);
+        vault.owner.require_auth();
+
+        let config = YieldDistributionConfig {
+            vault_id,
+            mode: mode.clone(),
+            last_distribution: env.ledger().timestamp(),
+            total_distributed: 0,
+            total_reinvested: 0,
+        };
+
+        let key = DataKey::YieldDistributionConfig(vault_id);
+        env.storage().persistent().set(&key, &config);
+        env.storage().persistent().extend_ttl(&key, VAULT_TTL_THRESHOLD, VAULT_TTL_LEDGERS);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
+
+        env.events().publish((YIELD_DISTRIBUTED_TOPIC, vault_id), vault_id);
+    }
+
+    /// Gets the yield distribution configuration for a vault.
+    pub fn get_yield_distribution(env: Env, vault_id: u64) -> Option<YieldDistributionConfig> {
+        let key = DataKey::YieldDistributionConfig(vault_id);
+        env.storage().persistent().get(&key)
+    }
+
+    /// Distributes accumulated yield to beneficiary or reinvests it.
+    /// This function calculates yield based on staking configuration and distributes
+    /// according to the configured mode.
+    ///
+    /// # Arguments
+    /// * `vault_id` - The vault ID
+    ///
+    /// # Panics
+    /// * Panics if vault has no staking or yield distribution configured
+    pub fn distribute_yield(env: Env, vault_id: u64) {
+        let mut vault = Self::load_vault(&env, vault_id);
+        
+        let staking_key = DataKey::TokenStaking(vault_id);
+        let staking = env.storage().persistent().get::<DataKey, TokenStaking>(&staking_key)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidAmount));
+
+        let yield_key = DataKey::YieldDistributionConfig(vault_id);
+        let mut yield_config = env.storage().persistent().get::<DataKey, YieldDistributionConfig>(&yield_key)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidAmount));
+
+        if !staking.is_active {
+            panic_with_error!(&env, ContractError::InvalidAmount);
+        }
+
+        // Calculate yield: (staked_amount * annual_yield_bps * time_elapsed) / (10000 * 365 * 86400)
+        let now = env.ledger().timestamp();
+        let time_elapsed = now.saturating_sub(staking.staking_start);
+        let yield_amount = (staking.staked_amount as i128)
+            .checked_mul(staking.annual_yield_bps as i128)
+            .and_then(|v| v.checked_mul(time_elapsed as i128))
+            .and_then(|v| v.checked_div(10000 * 365 * 86400))
+            .unwrap_or(0);
+
+        if yield_amount <= 0 {
+            return;
+        }
+
+        match &yield_config.mode {
+            YieldDistributionMode::DistributeToBeneficiary => {
+                // Transfer yield to beneficiary
+                let token_client = token::Client::new(&env, &vault.token_address);
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &vault.beneficiary,
+                    &yield_amount,
+                );
+                yield_config.total_distributed = yield_config.total_distributed
+                    .checked_add(yield_amount)
+                    .unwrap_or(yield_config.total_distributed);
+                env.events().publish((YIELD_DISTRIBUTED_TOPIC, vault_id), yield_amount);
+            }
+            YieldDistributionMode::Reinvest => {
+                // Reinvest yield back into vault
+                vault.balance = vault.balance
+                    .checked_add(yield_amount)
+                    .unwrap_or(vault.balance);
+                yield_config.total_reinvested = yield_config.total_reinvested
+                    .checked_add(yield_amount)
+                    .unwrap_or(yield_config.total_reinvested);
+                env.events().publish((YIELD_REINVESTED_TOPIC, vault_id), yield_amount);
+            }
+            YieldDistributionMode::Split(beneficiary_bps) => {
+                // Split yield between beneficiary and reinvestment
+                let beneficiary_amount = (yield_amount as i128)
+                    .checked_mul(*beneficiary_bps as i128)
+                    .and_then(|v| v.checked_div(10000))
+                    .unwrap_or(0);
+                let reinvest_amount = yield_amount.saturating_sub(beneficiary_amount);
+
+                if beneficiary_amount > 0 {
+                    let token_client = token::Client::new(&env, &vault.token_address);
+                    token_client.transfer(
+                        &env.current_contract_address(),
+                        &vault.beneficiary,
+                        &beneficiary_amount,
+                    );
+                    yield_config.total_distributed = yield_config.total_distributed
+                        .checked_add(beneficiary_amount)
+                        .unwrap_or(yield_config.total_distributed);
+                    env.events().publish((YIELD_DISTRIBUTED_TOPIC, vault_id), beneficiary_amount);
+                }
+
+                if reinvest_amount > 0 {
+                    vault.balance = vault.balance
+                        .checked_add(reinvest_amount)
+                        .unwrap_or(vault.balance);
+                    yield_config.total_reinvested = yield_config.total_reinvested
+                        .checked_add(reinvest_amount)
+                        .unwrap_or(yield_config.total_reinvested);
+                    env.events().publish((YIELD_REINVESTED_TOPIC, vault_id), reinvest_amount);
+                }
+            }
+        }
+
+        yield_config.last_distribution = now;
+        env.storage().persistent().set(&yield_key, &yield_config);
+        env.storage().persistent().extend_ttl(&yield_key, VAULT_TTL_THRESHOLD, VAULT_TTL_LEDGERS);
+        Self::save_vault(&env, vault_id, &vault);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
+    }
+
     /// Returns whether the contract is currently paused.
     ///
     /// # Arguments
@@ -905,6 +1168,7 @@ impl TtlVaultContract {
     /// * Panics if any amount is not positive
     /// * Panics if any vault is not in Locked status
     /// * Panics if any vault has expired
+    /// * Panics if any vault uses a non-whitelisted token
     /// * Panics if the total amount overflows
     pub fn batch_deposit(env: Env, from: Address, deposits: Vec<(u64, i128)>) {
         Self::assert_not_paused(&env);
@@ -912,6 +1176,7 @@ impl TtlVaultContract {
 
         let mut validated = Vec::new(&env);
         let mut total_amount = 0i128;
+        let default_token = Self::load_token(&env);
 
         for deposit in deposits.iter() {
             let (vault_id, amount) = deposit;
@@ -929,6 +1194,9 @@ impl TtlVaultContract {
                 panic_with_error!(&env, ContractError::VaultExpired);
             }
 
+            // Issue #582: Validate token whitelist
+            Self::assert_token_whitelisted(&env, &vault.token_address);
+
             total_amount = total_amount
                 .checked_add(amount)
                 .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidAmount));
@@ -942,7 +1210,6 @@ impl TtlVaultContract {
 
         // Note: batch_deposit now requires all vaults to use the same token (default XLM)
         // For multi-token support, use individual deposit calls
-        let default_token = Self::load_token(&env);
         let token_client = token::Client::new(&env, &default_token);
         token_client.transfer(&from, &env.current_contract_address(), &total_amount);
 
@@ -956,6 +1223,12 @@ impl TtlVaultContract {
                 .checked_add(amount)
                 .unwrap_or_else(|| panic_with_error!(&env, ContractError::BalanceOverflow));
             Self::save_vault(&env, vault_id, &vault);
+            
+            // Issue #582: Emit token whitelist validation event
+            env.events().publish(
+                (TOKEN_WHITELIST_VALIDATED_TOPIC, vault_id),
+                (&vault.token_address, amount),
+            );
         }
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
     }
